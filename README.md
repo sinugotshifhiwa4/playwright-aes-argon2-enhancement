@@ -75,7 +75,7 @@ npx cross-env PLAYWRIGHT_GREP=@decrypt npm run test:encryption:dev
 
 ---
 
-## 🧰 Developer Utilities
+## Command Line Utilities
 
 Enhance development productivity and maintain code quality with the following tools:
 
@@ -95,7 +95,7 @@ Enhance development productivity and maintain code quality with the following to
 
 ---
 
-## 📝 Best Practices & Notes
+## Best Practices & Notes
 
 - ❌ **Never commit `.env` files** to version control.
 - 🔄 **Regenerate encryption keys** whenever credentials change.
@@ -106,7 +106,7 @@ Enhance development productivity and maintain code quality with the following to
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 **Contributions are welcome!**
 Help improve this project by submitting issues, feature requests, or pull requests.
@@ -115,7 +115,7 @@ Help improve this project by submitting issues, feature requests, or pull reques
 
 ---
 
-## 📚 Further Reading
+## Further Reading
 
 If you'd like to learn more about crafting great README files, check out the following resources:
 
