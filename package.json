@@ -1,0 +1,40 @@
+{
+  "name": "playwright-aes-argon2-enhancement",
+  "version": "1.0.0",
+  "description": "Playwright tests with Argon2 hashing and AES to securely handle dotenv sensitive data without plaintext exposure in local or CI/CD",
+  "homepage": "https://github.com/sinugotshifhiwa4/playwright-aes-argon2-enhancement#readme",
+  "bugs": {
+    "url": "https://github.com/sinugotshifhiwa4/playwright-aes-argon2-enhancement/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sinugotshifhiwa4/playwright-aes-argon2-enhancement.git"
+  },
+  "license": "ISC",
+  "author": "Tshifhiwa Sinugo",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {},
+  "dependencies": {
+    "@faker-js/faker": "^9.8.0",
+    "argon2": "^0.43.0",
+    "axios": "^1.9.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.5.0",
+    "moment-timezone": "^0.6.0",
+    "playwright": "^1.53.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.0",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "@types/node": "^24.0.1",
+    "cspell": "9.0.2",
+    "eslint": "9.29.0",
+    "eslint-config-prettier": "10.1.5",
+    "eslint-plugin-prettier": "5.4.1",
+    "ortoni-report": "3.0.2",
+    "prettier": "3.5.3"
+  }
+}

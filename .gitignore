@@ -1,0 +1,22 @@
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/logs/
+/downloads/
+/ortoni-report/
+/ap_template/
+package-lock.json
+results.trx
+results.xml
+
+# Environment configuration
+.env*
+!*.example
+
+
+# Intentionally tracked
+# .vscode/ - keeping this tracked as it contains project-specific prettier setup
