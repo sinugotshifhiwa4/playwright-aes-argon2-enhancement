@@ -86,14 +86,19 @@ export default defineConfig({
     /*
      * Project configuration with conditional browser setup:
      *
-     * 1. When shouldSkipBrowserInit is FALSE (normal mode):
-     *    - Additional browser configurations can be included if needed
+     * The browser context is always required for these tests, but the portal (e.g., login, dashboard, or full UI app)
+     * may not be. This allows flexibility for both UI-based and non-UI (e.g., encryption, API, or low-level integration) tests.
      *
-     * 2. When shouldSkipBrowserInit is TRUE (performance optimization):
-     *    - No additional setup projects are included
-     *    - This optimization is useful for operations that don't need browser context
-     *      like crypto or database-only operations
+     * 1. When shouldSkipBrowserInit is FALSE (normal UI-enabled mode):
+     *    - Portal or app-specific bootstrapping (e.g., navigation, login) may be performed
+     *    - Full E2E tests can run with complete UI context
+     *
+     * 2. When shouldSkipBrowserInit is TRUE (non-UI mode):
+     *    - Browser context is still initialized, but portal-specific setup is explicitly skipped
+     *    - This is useful for tests that require a browser runtime (e.g., crypto in WebAssembly or secure storage)
+     *      but do not need the overhead of loading a full application shell
      */
+
     ...(!BrowserInitFlag.shouldSkipBrowserInit() ? [] : []),
     {
       name: 'chromium',

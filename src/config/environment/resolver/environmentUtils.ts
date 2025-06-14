@@ -1,5 +1,5 @@
 import EnvironmentDetector from '../detector/detector';
-import EncryptionService from '../../../cryptography/services/encryptionService';
+import EncryptionService from '../../../cryptography/service/encryptionService';
 import SanitizationConfig from '../../../utils/sanitization/sanitizationConfig';
 import { Credentials } from '../../types/auth/credentials.types';
 import { EnvironmentSecretKeys } from '../dotenv/constants';
