@@ -12,6 +12,7 @@ export interface CryptoByteLengths {
   WEB_CRYPTO_IV: number;
   SALT: number;
   SECRET_KEY: number;
+  HMAC_KEY_LENGTH: number;
 }
 
 export interface Argon2Config {
@@ -24,17 +25,3 @@ export interface SecurityConfig {
   BYTE_LENGTHS: CryptoByteLengths;
   ARGON2_PARAMETERS: Argon2Config;
 }
-
-export const SECURITY_CONFIG: SecurityConfig = {
-  BYTE_LENGTHS: {
-    IV: 16,
-    WEB_CRYPTO_IV: 12,
-    SALT: 32,
-    SECRET_KEY: 32,
-  },
-  ARGON2_PARAMETERS: {
-    MEMORY_COST: 262144, // 256 MB
-    TIME_COST: 4,
-    PARALLELISM: 3,
-  },
-};

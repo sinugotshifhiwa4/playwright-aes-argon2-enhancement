@@ -18,3 +18,9 @@ export enum EnvironmentSecretKeys {
   UAT = 'UAT_SECRET_KEY',
   PROD = 'PROD_SECRET_KEY',
 }
+
+export enum CryptoMetadata {
+  DIRECTORY = '.cryptoMetadata',
+  FILE_NAME = 'metadata.json',
+}
+

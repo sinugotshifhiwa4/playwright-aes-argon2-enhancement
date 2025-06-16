@@ -1,0 +1,1573 @@
+// import { KeyRotationConfigDefaults } from '../../cryptography/config/keyRotationConfig.constants';
+// import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
+// import { KeyMetadataRepository } from './keyMetadataRepository';
+// import {
+//   KeyMetadata,
+//   KeyRotationConfig,
+//   UsageTracking,
+//   AuditTrail,
+//   StatusTracking,
+// } from '../../cryptography/config/keyMetadata.types.ts';
+// import ErrorHandler from '../errors/errorHandler';
+// import logger from '../logging/loggerManager';
+
+// export class KeyRotationManager {
+//   public readonly keyRotationConfig: KeyRotationConfig;
+//   private environmentSecretFileManager: EnvironmentSecretFileManager;
+//   private metadataRepo: KeyMetadataRepository;
+
+//   constructor(
+//     environmentSecretFileManager: EnvironmentSecretFileManager,
+//     metadataRepo: KeyMetadataRepository,
+//     rotationConfig?: Partial<KeyRotationConfig>,
+//   ) {
+//     this.keyRotationConfig = {
+//       maxAgeInDays: rotationConfig?.maxAgeInDays ?? KeyRotationConfigDefaults.maxAgeInDays,
+//       warningThresholdInDays:
+//         rotationConfig?.warningThresholdInDays ?? KeyRotationConfigDefaults.warningThresholdInDays,
+//       enableAutoRotation:
+//         rotationConfig?.enableAutoRotation ?? KeyRotationConfigDefaults.enableAutoRotation,
+//     };
+//     this.environmentSecretFileManager = environmentSecretFileManager;
+//     this.metadataRepo = metadataRepo;
+//   }
+
+//   /**
+//    * Checks all keys for rotation requirements
+//    */
+//   public async checkAllKeysForRotation(): Promise<{
+//     keysNeedingRotation: string[];
+//     keysNeedingWarning: string[];
+//   }> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       const keysNeedingRotation: string[] = [];
+//       const keysNeedingWarning: string[] = [];
+
+//       for (const keyName of Object.keys(metadata)) {
+//         const status = await this.checkKeyRotationStatus(keyName);
+
+//         if (status.needsRotation) {
+//           keysNeedingRotation.push(keyName);
+//           logger.error(
+//             `SECURITY ALERT: Key "${keyName}" is ${status.ageInDays} days old and MUST be rotated immediately!`,
+//           );
+
+//           if (this.keyRotationConfig.enableAutoRotation) {
+//             logger.info(`Auto-rotation is enabled. Scheduling rotation for key "${keyName}"`);
+//           }
+//         } else if (status.needsWarning) {
+//           keysNeedingWarning.push(keyName);
+//           logger.warn(
+//             `Key "${keyName}" will expire in ${status.daysUntilRotation} days (current age: ${status.ageInDays} days). Consider rotating soon.`,
+//           );
+//         }
+//       }
+
+//       return { keysNeedingRotation, keysNeedingWarning };
+//     } catch (error) {
+//       ErrorHandler.captureError(
+//         error,
+//         'checkAllKeysForRotation',
+//         'Failed to check keys for rotation',
+//       );
+//       throw error;
+//     }
+//   }
+
+//   /**
+//    * Gets detailed information about a key including rotation status
+//    */
+//   public async getKeyInfo(keyName: string): Promise<{
+//     exists: boolean;
+//     metadata?: KeyMetadata;
+//     rotationStatus?: {
+//       needsRotation: boolean;
+//       needsWarning: boolean;
+//       ageInDays: number;
+//       daysUntilRotation: number;
+//     };
+//   }> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       const keyMetadata = metadata[keyName];
+
+//       if (!keyMetadata) {
+//         return { exists: false };
+//       }
+
+//       // VALIDATE ROTATION CONFIG HERE
+//       try {
+//         this.validateRotationConfig(keyMetadata.rotationConfig);
+//       } catch (error) {
+//         const errorAsError = error as Error;
+//         logger.warn(`Invalid rotation config for key "${keyName}": ${errorAsError.message}`);
+//         // Could trigger a metadata repair here if needed
+//       }
+
+//       const rotationStatus = await this.checkKeyRotationStatus(keyName);
+
+//       return {
+//         exists: true,
+//         metadata: keyMetadata,
+//         rotationStatus,
+//       };
+//     } catch (error) {
+//       ErrorHandler.captureError(error, 'getKeyInfo', `Failed to get info for key "${keyName}"`);
+//       throw error;
+//     }
+//   }
+
+//   public async storeBaseEnvironmentKey(
+//     filePath: string,
+//     keyName: string,
+//     keyValue: string,
+//     customMaxAge?: number,
+//     shouldRotateKey: boolean = false,
+//   ): Promise<void> {
+//     try {
+//       let fileContent =
+//         await this.environmentSecretFileManager.getOrCreateBaseEnvFileContent(filePath);
+//       const keyRegex = new RegExp(`^${keyName}=.*`, 'm');
+//       const keyExists = keyRegex.test(fileContent);
+//       if (keyExists && !shouldRotateKey) {
+//         logger.info(
+//           `The environment variable "${keyName}" already exists. Delete it or set shouldRotateKey=true to regenerate.`,
+//         );
+//         return;
+//       }
+//       const effectiveMaxAge = customMaxAge || this.keyRotationConfig.maxAgeInDays;
+//       const rotationInfo = customMaxAge
+//         ? `with custom rotation (${effectiveMaxAge} days)`
+//         : `with default rotation (${effectiveMaxAge} days)`;
+//       if (keyExists && shouldRotateKey) {
+//         fileContent = fileContent.replace(keyRegex, `${keyName}=${keyValue}`);
+//         logger.info(`Environment variable "${keyName}" has been rotated (overwritten).`);
+//       } else {
+//         if (fileContent && !fileContent.endsWith('\n')) {
+//           fileContent += '\n';
+//         }
+//         fileContent += `${keyName}=${keyValue}`;
+//         logger.info(`Secret key "${keyName}" generated and stored ${rotationInfo}`);
+//       }
+//       await this.environmentSecretFileManager.writeSecretKeyVariableToBaseEnvFile(
+//         filePath,
+//         fileContent,
+//         keyName,
+//       );
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+
+//       // Create the rotation config object
+//       const rotationConfig: KeyRotationConfig = {
+//         maxAgeInDays: customMaxAge || this.keyRotationConfig.maxAgeInDays,
+//         warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
+//         enableAutoRotation: this.keyRotationConfig.enableAutoRotation,
+//       };
+
+//       // VALIDATE THE CONFIG BEFORE STORING
+//       const validatedConfig = this.validateRotationConfig(rotationConfig);
+
+//       metadata[keyName] = {
+//         keyName,
+//         createdAt: new Date(),
+//         rotationCount:
+//           keyExists && shouldRotateKey ? (metadata[keyName]?.rotationCount ?? 0) + 1 : 0,
+//         lastRotatedAt: shouldRotateKey ? new Date() : undefined,
+//         rotationConfig: validatedConfig, // Use validated config
+//         auditTrail: this.createEmptyAuditTrail(),
+//         usageTracking: this.createDefaultUsageTracking(),
+//         statusTracking: this.createDefaultStatusTracking(this.keyRotationConfig.enableAutoRotation),
+//       };
+
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+//       logger.info(
+//         `Environment variable "${keyName}" ${
+//           shouldRotateKey ? 'rotated' : 'created'
+//         } successfully with rotation tracking.`,
+//       );
+//     } catch (error) {
+//       ErrorHandler.captureError(
+//         error,
+//         'storeBaseEnvKey',
+//         `Failed to store key "${keyName}" in environment file.`,
+//       );
+//       throw error;
+//     }
+//   }
+
+//   /**
+//    * Enhanced check method with audit trail
+//    */
+//   public async checkKeyRotationStatusWithAudit(
+//     keyName: string,
+//     checkSource: 'startup' | 'scheduled' | 'manual' | 'api' = 'manual',
+//   ): Promise<{
+//     needsRotation: boolean;
+//     needsWarning: boolean;
+//     ageInDays: number;
+//     daysUntilRotation: number;
+//   }> {
+//     const status = await this.checkKeyRotationStatus(keyName);
+
+//     let healthStatus: 'healthy' | 'warning' | 'critical';
+//     const recommendations: string[] = [];
+
+//     if (status.needsRotation) {
+//       healthStatus = 'critical';
+//       recommendations.push('Immediate rotation required');
+//     } else if (status.needsWarning) {
+//       healthStatus = 'warning';
+//       recommendations.push(`Consider rotating within ${status.daysUntilRotation} days`);
+//     } else {
+//       healthStatus = 'healthy';
+//     }
+
+//     await this.recordHealthCheck(
+//       keyName,
+//       status.ageInDays,
+//       status.daysUntilRotation,
+//       healthStatus,
+//       checkSource,
+//       recommendations,
+//     );
+
+//     if (status.needsRotation) {
+//       await this.recordAuditEvent(
+//         keyName,
+//         'expired',
+//         'critical',
+//         'checkKeyRotationStatusWithAudit',
+//         `Key has expired and requires immediate rotation (${status.ageInDays} days old)`,
+//       );
+//     } else if (status.needsWarning) {
+//       await this.recordAuditEvent(
+//         keyName,
+//         'warning_issued',
+//         'warning',
+//         'checkKeyRotationStatusWithAudit',
+//         `Key will expire in ${status.daysUntilRotation} days`,
+//       );
+//     }
+
+//     return status;
+//   }
+
+//   /**
+//    * Calculates the age of a key in days
+//    */
+//   private calculateKeyAge(metadata: KeyMetadata): number {
+//     const referenceDate = metadata.lastRotatedAt || metadata.createdAt;
+//     const now = new Date();
+//     const diffTime = Math.abs(now.getTime() - referenceDate.getTime());
+//     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+//   }
+
+//   private async checkKeyRotationStatus(keyName: string): Promise<{
+//     needsRotation: boolean;
+//     needsWarning: boolean;
+//     ageInDays: number;
+//     daysUntilRotation: number;
+//   }> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       const keyMetadata = metadata[keyName];
+
+//       if (!keyMetadata) {
+//         return {
+//           needsRotation: false,
+//           needsWarning: false,
+//           ageInDays: 0,
+//           daysUntilRotation: this.keyRotationConfig.maxAgeInDays,
+//         };
+//       }
+
+//       const ageInDays = this.calculateKeyAge(keyMetadata);
+
+//       // VALIDATE ROTATION CONFIG HERE
+//       let validatedConfig: KeyRotationConfig;
+//       try {
+//         validatedConfig = this.validateRotationConfig(keyMetadata.rotationConfig);
+//       } catch (error) {
+//         const errorAsError = error as Error;
+//         logger.warn(
+//           `Invalid rotation config for key "${keyName}", using defaults: ${errorAsError.message}`,
+//         );
+//         // Fall back to default config if validation fails
+//         validatedConfig = this.keyRotationConfig;
+//       }
+
+//       const maxAge = validatedConfig.maxAgeInDays;
+//       const daysUntilRotation = maxAge - ageInDays;
+
+//       const needsRotation = ageInDays >= maxAge;
+//       const needsWarning =
+//         daysUntilRotation <= this.keyRotationConfig.warningThresholdInDays && !needsRotation;
+
+//       return {
+//         needsRotation,
+//         needsWarning,
+//         ageInDays,
+//         daysUntilRotation: Math.max(0, daysUntilRotation),
+//       };
+//     } catch (error) {
+//       ErrorHandler.captureError(
+//         error,
+//         'checkKeyRotationStatus',
+//         `Failed to check rotation status for key "${keyName}"`,
+//       );
+//       throw error;
+//     }
+//   }
+
+//   /**
+//    * Records a scheduled check event
+//    */
+//   private async recordScheduledCheck(
+//     keyName: string,
+//     checkType: 'startup' | 'scheduled' | 'manual',
+//     result: 'passed' | 'warning' | 'failed',
+//     action: 'none' | 'rotated' | 'notification_sent',
+//     daysUntilExpiry: number,
+//     details?: string,
+//   ): Promise<void> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       if (!metadata[keyName]) return;
+
+//       if (!metadata[keyName].auditTrail) {
+//         metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+//       }
+
+//       if (!metadata[keyName].auditTrail.scheduledRotationHistory) {
+//         metadata[keyName].auditTrail.scheduledRotationHistory = [];
+//       }
+
+//       metadata[keyName].auditTrail.scheduledRotationHistory.push({
+//         timestamp: new Date(),
+//         checkType,
+//         result,
+//         action,
+//         daysUntilExpiry,
+//         details,
+//       });
+
+//       metadata[keyName].auditTrail.lastScheduledCheck = new Date();
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+//     } catch (error) {
+//       logger.error('Failed to record scheduled check', error);
+//     }
+//   }
+
+//   /**
+//    * Records an audit event
+//    */
+//   public async recordAuditEvent(
+//     keyName: string,
+//     eventType: 'created' | 'rotated' | 'accessed' | 'warning_issued' | 'expired' | 'health_check',
+//     severity: 'info' | 'warning' | 'error' | 'critical',
+//     source: string,
+//     details: string,
+//     additionalMetadata?: Record<string, unknown>,
+//   ): Promise<void> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       if (!metadata[keyName]) return;
+
+//       if (!metadata[keyName].auditTrail) {
+//         metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+//       }
+
+//       if (!metadata[keyName].auditTrail.auditTrail) {
+//         metadata[keyName].auditTrail.auditTrail = [];
+//       }
+
+//       metadata[keyName].auditTrail.auditTrail.push({
+//         timestamp: new Date(),
+//         eventType,
+//         severity,
+//         source,
+//         details,
+//         metadata: additionalMetadata,
+//       });
+
+//       if (metadata[keyName].auditTrail.auditTrail.length > 100) {
+//         metadata[keyName].auditTrail.auditTrail =
+//           metadata[keyName].auditTrail.auditTrail.slice(-100);
+//       }
+
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+//     } catch (error) {
+//       logger.error('Failed to record audit event', error);
+//     }
+//   }
+
+//   /**
+//    * Records a health check event
+//    */
+//   private async recordHealthCheck(
+//     keyName: string,
+//     ageInDays: number,
+//     daysUntilExpiry: number,
+//     status: 'healthy' | 'warning' | 'critical',
+//     checkSource: 'startup' | 'scheduled' | 'manual' | 'api',
+//     recommendations?: string[],
+//   ): Promise<void> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       if (!metadata[keyName]) return;
+
+//       if (!metadata[keyName].auditTrail) {
+//         metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+//       }
+
+//       if (!metadata[keyName].auditTrail.healthCheckHistory) {
+//         metadata[keyName].auditTrail.healthCheckHistory = [];
+//       }
+
+//       metadata[keyName].auditTrail.healthCheckHistory.push({
+//         timestamp: new Date(),
+//         ageInDays,
+//         daysUntilExpiry,
+//         status,
+//         checkSource,
+//         recommendations,
+//       });
+
+//       metadata[keyName].auditTrail.lastHealthCheck = new Date();
+
+//       if (!metadata[keyName].statusTracking) {
+//         metadata[keyName].statusTracking = this.createDefaultStatusTracking(
+//           this.keyRotationConfig.enableAutoRotation,
+//         );
+//       } else if (metadata[keyName].statusTracking.currentStatus !== status) {
+//         metadata[keyName].statusTracking.currentStatus = status;
+//         metadata[keyName].statusTracking.lastStatusChange = new Date();
+//       }
+
+//       if (metadata[keyName].auditTrail.healthCheckHistory.length > 50) {
+//         metadata[keyName].auditTrail.healthCheckHistory =
+//           metadata[keyName].auditTrail.healthCheckHistory.slice(-50);
+//       }
+
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+//     } catch (error) {
+//       logger.error('Failed to record health check', error);
+//     }
+//   }
+
+//   /**
+//    * Performs system-wide audit with detailed reporting
+//    */
+//   public async performComprehensiveAudit(): Promise<{
+//     systemHealth: 'healthy' | 'warning' | 'critical';
+//     keysNeedingRotation: string[];
+//     keysNeedingWarning: string[];
+//     auditSummary: {
+//       totalKeys: number;
+//       healthyKeys: number;
+//       warningKeys: number;
+//       criticalKeys: number;
+//       averageKeyAge: number;
+//       oldestKeyAge: number;
+//       newestKeyAge: number;
+//     };
+//     recommendations: string[];
+//   }> {
+//     const { keysNeedingRotation, keysNeedingWarning } = await this.checkAllKeysForRotation();
+//     const metadata = await this.metadataRepo.readKeyMetadata();
+
+//     const allKeys = Object.keys(metadata).filter((key) => key !== 'SYSTEM');
+//     const totalKeys = allKeys.length;
+//     const criticalKeys = keysNeedingRotation.length;
+//     const warningKeys = keysNeedingWarning.length;
+//     const healthyKeys = totalKeys - criticalKeys - warningKeys;
+
+//     // Calculate age statistics
+//     const keyAges = allKeys.map((keyName) => this.calculateKeyAge(metadata[keyName]));
+//     const averageKeyAge =
+//       keyAges.length > 0 ? keyAges.reduce((a, b) => a + b, 0) / keyAges.length : 0;
+//     const oldestKeyAge = keyAges.length > 0 ? Math.max(...keyAges) : 0;
+//     const newestKeyAge = keyAges.length > 0 ? Math.min(...keyAges) : 0;
+
+//     // Determine system health
+//     let systemHealth: 'healthy' | 'warning' | 'critical';
+//     if (criticalKeys > 0) {
+//       systemHealth = 'critical';
+//     } else if (warningKeys > 0) {
+//       systemHealth = 'warning';
+//     } else {
+//       systemHealth = 'healthy';
+//     }
+
+//     // Generate recommendations
+//     const recommendations: string[] = [];
+//     if (criticalKeys > 0) {
+//       recommendations.push(`${criticalKeys} key(s) require immediate rotation`);
+//     }
+//     if (warningKeys > 0) {
+//       recommendations.push(`${warningKeys} key(s) should be rotated soon`);
+//     }
+//     if (averageKeyAge > this.keyRotationConfig.maxAgeInDays * 0.8) {
+//       recommendations.push('Consider reducing key rotation intervals');
+//     }
+
+//     // Update system metadata
+//     //await this.updateSystemMetadata(systemHealth, totalKeys);
+
+//     return {
+//       systemHealth,
+//       keysNeedingRotation,
+//       keysNeedingWarning,
+//       auditSummary: {
+//         totalKeys,
+//         healthyKeys,
+//         warningKeys,
+//         criticalKeys,
+//         averageKeyAge: Math.round(averageKeyAge * 100) / 100,
+//         oldestKeyAge,
+//         newestKeyAge,
+//       },
+//       recommendations,
+//     };
+//   }
+
+//   /**
+//    * Enhanced store method with audit trail
+//    */
+//   public async storeBaseEnvironmentKeyWithAudit(
+//     filePath: string,
+//     keyName: string,
+//     keyValue: string,
+//     customMaxAge?: number,
+//     environmentsUsedIn: string[] = [],
+//     dependentVariables: string[] = [],
+//   ): Promise<void> {
+//     await this.storeBaseEnvironmentKey(filePath, keyName, keyValue, customMaxAge);
+
+//     // Enhanced metadata with audit info
+//     const metadata = await this.metadataRepo.readKeyMetadata();
+//     if (metadata[keyName]) {
+//       // Initialize status tracking
+//       metadata[keyName].statusTracking = {
+//         currentStatus: 'healthy',
+//         lastStatusChange: new Date(),
+//         autoRotationEnabled: this.keyRotationConfig.enableAutoRotation,
+//       };
+
+//       // Initialize usage tracking
+//       metadata[keyName].usageTracking = {
+//         environmentsUsedIn,
+//         dependentVariables,
+//       };
+
+//       // Initialize audit trail
+//       metadata[keyName].auditTrail = {
+//         scheduledRotationHistory: [],
+//         auditTrail: [],
+//         rotationHistory: [],
+//         healthCheckHistory: [],
+//       };
+
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+
+//       // Record creation audit event
+//       await this.recordAuditEvent(
+//         keyName,
+//         'created',
+//         'info',
+//         'storeBaseEnvironmentKeyWithAudit',
+//         `Secret key created with ${customMaxAge || this.keyRotationConfig.maxAgeInDays}-day rotation period`,
+//         {
+//           initialMaxAge: customMaxAge || this.keyRotationConfig.maxAgeInDays,
+//           autoRotationEnabled: this.keyRotationConfig.enableAutoRotation,
+//           environmentsUsedIn,
+//           dependentVariables,
+//         },
+//       );
+//     }
+//   }
+
+//   /**
+//    * Records key access for usage tracking
+//    */
+//   public async recordKeyAccess(keyName: string, accessSource: string): Promise<void> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       if (!metadata[keyName]) return;
+
+//       // Update last accessed time
+//       if (!metadata[keyName].usageTracking) {
+//         metadata[keyName].usageTracking = {
+//           environmentsUsedIn: [],
+//           dependentVariables: [],
+//         };
+//       }
+
+//       metadata[keyName].usageTracking.lastAccessedAt = new Date();
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+
+//       // Record audit event
+//       await this.recordAuditEvent(
+//         keyName,
+//         'accessed',
+//         'info',
+//         accessSource,
+//         `Key accessed from ${accessSource}`,
+//       );
+//     } catch (error) {
+//       logger.error('Failed to record key access', error);
+//     }
+//   }
+
+//   /**
+//    * Gets comprehensive key information including all audit data
+//    */
+//   public async getComprehensiveKeyInfo(keyName: string): Promise<{
+//     exists: boolean;
+//     metadata?: KeyMetadata; // Changed from SecretKeyMetadata to KeyMetadata
+//     rotationStatus?: {
+//       needsRotation: boolean;
+//       needsWarning: boolean;
+//       ageInDays: number;
+//       daysUntilRotation: number;
+//     };
+//     auditSummary?: {
+//       totalRotations: number;
+//       lastRotation?: Date;
+//       lastHealthCheck?: Date;
+//       lastAccess?: Date;
+//       currentStatus: string;
+//       totalAuditEvents: number;
+//     };
+//   }> {
+//     try {
+//       const metadata = await this.metadataRepo.readKeyMetadata();
+//       const keyMetadata = metadata[keyName];
+
+//       if (!keyMetadata) {
+//         return { exists: false };
+//       }
+
+//       const rotationStatus = await this.checkKeyRotationStatus(keyName);
+
+//       // Build audit summary
+//       const auditSummary = {
+//         totalRotations: keyMetadata.rotationCount,
+//         lastRotation: keyMetadata.lastRotatedAt,
+//         lastHealthCheck: keyMetadata.auditTrail?.lastHealthCheck,
+//         lastAccess: keyMetadata.usageTracking?.lastAccessedAt,
+//         currentStatus: keyMetadata.statusTracking?.currentStatus || 'unknown',
+//         totalAuditEvents: keyMetadata.auditTrail?.auditTrail?.length || 0,
+//       };
+
+//       return {
+//         exists: true,
+//         metadata: keyMetadata,
+//         rotationStatus,
+//         auditSummary,
+//       };
+//     } catch (error) {
+//       ErrorHandler.captureError(
+//         error,
+//         'getComprehensiveKeyInfo',
+//         `Failed to get comprehensive info for key "${keyName}"`,
+//       );
+//       throw error;
+//     }
+//   }
+
+//   public async validateAndRepairAllMetadata(): Promise<{
+//     totalKeys: number;
+//     repairedKeys: string[];
+//     errors: Array<{ keyName: string; error: string }>;
+//   }> {
+//     const metadata = await this.metadataRepo.readKeyMetadata();
+//     const repairedKeys: string[] = [];
+//     const errors: Array<{ keyName: string; error: string }> = [];
+
+//     for (const [keyName, keyMetadata] of Object.entries(metadata)) {
+//       if (keyName === 'SYSTEM') continue; // Skip system metadata
+
+//       try {
+//         this.validateRotationConfig(keyMetadata.rotationConfig);
+//       } catch (error) {
+//         try {
+//           const errorAsError = error as Error;
+
+//           // Attempt to repair with default config
+//           keyMetadata.rotationConfig = {
+//             maxAgeInDays: this.keyRotationConfig.maxAgeInDays,
+//             warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
+//             enableAutoRotation: this.keyRotationConfig.enableAutoRotation,
+//           };
+//           repairedKeys.push(keyName);
+
+//           // Log the repair
+//           await this.recordAuditEvent(
+//             keyName,
+//             'rotated', // or create a new event type like 'metadata_repaired'
+//             'warning',
+//             'validateAndRepairAllMetadata',
+//             `Repaired invalid rotation config: ${errorAsError.message}`,
+//           );
+//         } catch (repairError) {
+//           const errorAsError = repairError as Error;
+//           errors.push({
+//             keyName,
+//             error: `Failed to repair: ${errorAsError.message}`,
+//           });
+//         }
+//       }
+//     }
+
+//     if (repairedKeys.length > 0) {
+//       await this.metadataRepo.writeKeyMetadata(metadata);
+//       logger.info(`Repaired rotation config for keys: ${repairedKeys.join(', ')}`);
+//     }
+
+//     return {
+//       totalKeys: Object.keys(metadata).length - 1, // Exclude SYSTEM
+//       repairedKeys,
+//       errors,
+//     };
+//   }
+
+//   public createEmptyAuditTrail(): AuditTrail {
+//     return {
+//       scheduledRotationHistory: [],
+//       auditTrail: [],
+//       rotationHistory: [],
+//       healthCheckHistory: [],
+//     };
+//   }
+
+//   // Helper function to create default usage tracking
+//   public createDefaultUsageTracking(): UsageTracking {
+//     return {
+//       environmentsUsedIn: [],
+//       dependentVariables: [],
+//     };
+//   }
+
+//   public createDefaultStatusTracking(autoRotationEnabled: boolean): StatusTracking {
+//     return {
+//       currentStatus: 'healthy',
+//       lastStatusChange: new Date(),
+//       autoRotationEnabled,
+//     };
+//   }
+
+//   /**
+//    * Simple key hashing for audit purposes (not for security)
+//    */
+//   public hashKey(key: string): string {
+//     // Simple hash for audit trail - not cryptographically secure
+//     let hash = 0;
+//     for (let i = 0; i < key.length; i++) {
+//       const char = key.charCodeAt(i);
+//       hash = (hash << 5) - hash + char;
+//       hash = hash & hash; // Convert to 32-bit integer
+//     }
+//     return Math.abs(hash).toString(16);
+//   }
+
+//   private validateRotationConfig(config: KeyRotationConfig): KeyRotationConfig {
+//     if (!config || typeof config !== 'object') {
+//       throw new Error('Invalid rotation config: config must be an object');
+//     }
+
+//     if (typeof config.maxAgeInDays !== 'number' || config.maxAgeInDays <= 0) {
+//       throw new Error('Invalid rotation config: maxAgeInDays must be a positive number');
+//     }
+
+//     if (typeof config.warningThresholdInDays !== 'number' || config.warningThresholdInDays < 0) {
+//       throw new Error(
+//         'Invalid rotation config: warningThresholdInDays must be a non-negative number',
+//       );
+//     }
+
+//     if (typeof config.enableAutoRotation !== 'boolean') {
+//       throw new Error('Invalid rotation config: enableAutoRotation must be a boolean');
+//     }
+
+//     // Additional validation: warning threshold should be less than max age
+//     if (config.warningThresholdInDays >= config.maxAgeInDays) {
+//       throw new Error(
+//         'Invalid rotation config: warningThresholdInDays must be less than maxAgeInDays',
+//       );
+//     }
+
+//     return config as KeyRotationConfig;
+//   }
+// }
+
+
+import { KeyRotationConfigDefaults } from '../../cryptography/config/keyRotationConfig.constants';
+import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
+import { KeyMetadataRepository } from './keyMetadataRepository';
+import {
+  KeyMetadata,
+  KeyRotationConfig,
+  UsageTracking,
+  AuditTrail,
+  StatusTracking,
+} from '../../cryptography/config/keyMetadata.types.ts';
+import ErrorHandler from '../errors/errorHandler';
+import logger from '../logging/loggerManager';
+
+export class KeyRotationManager {
+  public readonly keyRotationConfig: KeyRotationConfig;
+  private environmentSecretFileManager: EnvironmentSecretFileManager;
+  private metadataRepo: KeyMetadataRepository;
+
+  constructor(
+    environmentSecretFileManager: EnvironmentSecretFileManager,
+    metadataRepo: KeyMetadataRepository,
+    rotationConfig?: Partial<KeyRotationConfig>,
+  ) {
+    this.keyRotationConfig = {
+      maxAgeInDays: rotationConfig?.maxAgeInDays ?? KeyRotationConfigDefaults.maxAgeInDays,
+      warningThresholdInDays:
+        rotationConfig?.warningThresholdInDays ?? KeyRotationConfigDefaults.warningThresholdInDays,
+      enableAutoRotation:
+        rotationConfig?.enableAutoRotation ?? KeyRotationConfigDefaults.enableAutoRotation,
+    };
+    this.environmentSecretFileManager = environmentSecretFileManager;
+    this.metadataRepo = metadataRepo;
+  }
+
+  /**
+   * Checks all keys for rotation requirements with audit trail
+   */
+  public async checkAllKeysForRotation(): Promise<{
+    keysNeedingRotation: string[];
+    keysNeedingWarning: string[];
+  }> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      const keysNeedingRotation: string[] = [];
+      const keysNeedingWarning: string[] = [];
+
+      for (const keyName of Object.keys(metadata)) {
+        const status = await this.checkKeyRotationStatus(keyName, 'scheduled');
+
+        if (status.needsRotation) {
+          keysNeedingRotation.push(keyName);
+          logger.error(
+            `SECURITY ALERT: Key "${keyName}" is ${status.ageInDays} days old and MUST be rotated immediately!`,
+          );
+
+          if (this.keyRotationConfig.enableAutoRotation) {
+            logger.info(`Auto-rotation is enabled. Scheduling rotation for key "${keyName}"`);
+          }
+        } else if (status.needsWarning) {
+          keysNeedingWarning.push(keyName);
+          logger.warn(
+            `Key "${keyName}" will expire in ${status.daysUntilRotation} days (current age: ${status.ageInDays} days). Consider rotating soon.`,
+          );
+        }
+      }
+
+      return { keysNeedingRotation, keysNeedingWarning };
+    } catch (error) {
+      ErrorHandler.captureError(
+        error,
+        'checkAllKeysForRotation',
+        'Failed to check keys for rotation',
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Gets detailed information about a key including rotation status
+   */
+  public async getKeyInfo(keyName: string): Promise<{
+    exists: boolean;
+    metadata?: KeyMetadata;
+    rotationStatus?: {
+      needsRotation: boolean;
+      needsWarning: boolean;
+      ageInDays: number;
+      daysUntilRotation: number;
+    };
+  }> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      const keyMetadata = metadata[keyName];
+
+      if (!keyMetadata) {
+        return { exists: false };
+      }
+
+      // VALIDATE ROTATION CONFIG HERE
+      try {
+        this.validateRotationConfig(keyMetadata.rotationConfig);
+      } catch (error) {
+        const errorAsError = error as Error;
+        logger.warn(`Invalid rotation config for key "${keyName}": ${errorAsError.message}`);
+        // Could trigger a metadata repair here if needed
+      }
+
+      const rotationStatus = await this.checkKeyRotationStatus(keyName, 'api');
+
+      return {
+        exists: true,
+        metadata: keyMetadata,
+        rotationStatus,
+      };
+    } catch (error) {
+      ErrorHandler.captureError(error, 'getKeyInfo', `Failed to get info for key "${keyName}"`);
+      throw error;
+    }
+  }
+
+  /**
+   * Consolidated store method with audit trail (replaces both versions)
+   */
+  public async storeBaseEnvironmentKey(
+    filePath: string,
+    keyName: string,
+    keyValue: string,
+    customMaxAge?: number,
+    shouldRotateKey: boolean = false,
+    environmentsUsedIn: string[] = [],
+    dependentVariables: string[] = [],
+  ): Promise<void> {
+    try {
+      let fileContent =
+        await this.environmentSecretFileManager.getOrCreateBaseEnvFileContent(filePath);
+      const keyRegex = new RegExp(`^${keyName}=.*`, 'm');
+      const keyExists = keyRegex.test(fileContent);
+      
+      if (keyExists && !shouldRotateKey) {
+        logger.info(
+          `The environment variable "${keyName}" already exists. Delete it or set shouldRotateKey=true to regenerate.`,
+        );
+        return;
+      }
+
+      const effectiveMaxAge = customMaxAge || this.keyRotationConfig.maxAgeInDays;
+      const rotationInfo = customMaxAge
+        ? `with custom rotation (${effectiveMaxAge} days)`
+        : `with default rotation (${effectiveMaxAge} days)`;
+
+      if (keyExists && shouldRotateKey) {
+        fileContent = fileContent.replace(keyRegex, `${keyName}=${keyValue}`);
+        logger.info(`Environment variable "${keyName}" has been rotated (overwritten).`);
+      } else {
+        if (fileContent && !fileContent.endsWith('\n')) {
+          fileContent += '\n';
+        }
+        fileContent += `${keyName}=${keyValue}`;
+        logger.info(`Secret key "${keyName}" generated and stored ${rotationInfo}`);
+      }
+
+      await this.environmentSecretFileManager.writeSecretKeyVariableToBaseEnvFile(
+        filePath,
+        fileContent,
+        keyName,
+      );
+
+      const metadata = await this.metadataRepo.readKeyMetadata();
+
+      // Create the rotation config object
+      const rotationConfig: KeyRotationConfig = {
+        maxAgeInDays: customMaxAge || this.keyRotationConfig.maxAgeInDays,
+        warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
+        enableAutoRotation: this.keyRotationConfig.enableAutoRotation,
+      };
+
+      // VALIDATE THE CONFIG BEFORE STORING
+      const validatedConfig = this.validateRotationConfig(rotationConfig);
+
+      // Create comprehensive metadata with all tracking
+      metadata[keyName] = {
+        keyName,
+        createdAt: new Date(),
+        rotationCount:
+          keyExists && shouldRotateKey ? (metadata[keyName]?.rotationCount ?? 0) + 1 : 0,
+        lastRotatedAt: shouldRotateKey ? new Date() : undefined,
+        rotationConfig: validatedConfig,
+        auditTrail: this.createEmptyAuditTrail(),
+        usageTracking: {
+          environmentsUsedIn,
+          dependentVariables,
+        },
+        statusTracking: {
+          currentStatus: 'healthy',
+          lastStatusChange: new Date(),
+          autoRotationEnabled: this.keyRotationConfig.enableAutoRotation,
+        },
+      };
+
+      await this.metadataRepo.writeKeyMetadata(metadata);
+
+      // Record audit event
+      await this.recordAuditEvent(
+        keyName,
+        shouldRotateKey ? 'rotated' : 'created',
+        'info',
+        'storeBaseEnvironmentKey',
+        `Secret key ${shouldRotateKey ? 'rotated' : 'created'} with ${effectiveMaxAge}-day rotation period`,
+        {
+          initialMaxAge: effectiveMaxAge,
+          autoRotationEnabled: this.keyRotationConfig.enableAutoRotation,
+          environmentsUsedIn,
+          dependentVariables,
+        },
+      );
+
+      logger.info(
+        `Environment variable "${keyName}" ${
+          shouldRotateKey ? 'rotated' : 'created'
+        } successfully with rotation tracking.`,
+      );
+    } catch (error) {
+      ErrorHandler.captureError(
+        error,
+        'storeBaseEnvironmentKey',
+        `Failed to store key "${keyName}" in environment file.`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Consolidated check method with audit trail (replaces both versions)
+   */
+  public async checkKeyRotationStatus(
+    keyName: string,
+    checkSource: 'startup' | 'scheduled' | 'manual' | 'api' = 'manual',
+  ): Promise<{
+    needsRotation: boolean;
+    needsWarning: boolean;
+    ageInDays: number;
+    daysUntilRotation: number;
+  }> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      const keyMetadata = metadata[keyName];
+
+      if (!keyMetadata) {
+        return {
+          needsRotation: false,
+          needsWarning: false,
+          ageInDays: 0,
+          daysUntilRotation: this.keyRotationConfig.maxAgeInDays,
+        };
+      }
+
+      const ageInDays = this.calculateKeyAge(keyMetadata);
+
+      // VALIDATE ROTATION CONFIG HERE
+      let validatedConfig: KeyRotationConfig;
+      try {
+        validatedConfig = this.validateRotationConfig(keyMetadata.rotationConfig);
+      } catch (error) {
+        const errorAsError = error as Error;
+        logger.warn(
+          `Invalid rotation config for key "${keyName}", using defaults: ${errorAsError.message}`,
+        );
+        // Fall back to default config if validation fails
+        validatedConfig = this.keyRotationConfig;
+      }
+
+      const maxAge = validatedConfig.maxAgeInDays;
+      const daysUntilRotation = maxAge - ageInDays;
+
+      const needsRotation = ageInDays >= maxAge;
+      const needsWarning =
+        daysUntilRotation <= this.keyRotationConfig.warningThresholdInDays && !needsRotation;
+
+      const status = {
+        needsRotation,
+        needsWarning,
+        ageInDays,
+        daysUntilRotation: Math.max(0, daysUntilRotation),
+      };
+
+      // Record audit trail
+      let healthStatus: 'healthy' | 'warning' | 'critical';
+      const recommendations: string[] = [];
+
+      if (status.needsRotation) {
+        healthStatus = 'critical';
+        recommendations.push('Immediate rotation required');
+      } else if (status.needsWarning) {
+        healthStatus = 'warning';
+        recommendations.push(`Consider rotating within ${status.daysUntilRotation} days`);
+      } else {
+        healthStatus = 'healthy';
+      }
+
+      await this.recordHealthCheck(
+        keyName,
+        status.ageInDays,
+        status.daysUntilRotation,
+        healthStatus,
+        checkSource,
+        recommendations,
+      );
+
+      if (status.needsRotation) {
+        await this.recordAuditEvent(
+          keyName,
+          'expired',
+          'critical',
+          'checkKeyRotationStatus',
+          `Key has expired and requires immediate rotation (${status.ageInDays} days old)`,
+        );
+      } else if (status.needsWarning) {
+        await this.recordAuditEvent(
+          keyName,
+          'warning_issued',
+          'warning',
+          'checkKeyRotationStatus',
+          `Key will expire in ${status.daysUntilRotation} days`,
+        );
+      }
+
+      return status;
+    } catch (error) {
+      ErrorHandler.captureError(
+        error,
+        'checkKeyRotationStatus',
+        `Failed to check rotation status for key "${keyName}"`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Gets comprehensive key information including all audit data (replaces getComprehensiveKeyInfo)
+   */
+  public async getComprehensiveKeyInfo(keyName: string): Promise<{
+    exists: boolean;
+    metadata?: KeyMetadata;
+    rotationStatus?: {
+      needsRotation: boolean;
+      needsWarning: boolean;
+      ageInDays: number;
+      daysUntilRotation: number;
+    };
+    auditSummary?: {
+      totalRotations: number;
+      lastRotation?: Date;
+      lastHealthCheck?: Date;
+      lastAccess?: Date;
+      currentStatus: string;
+      totalAuditEvents: number;
+    };
+  }> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      const keyMetadata = metadata[keyName];
+
+      if (!keyMetadata) {
+        return { exists: false };
+      }
+
+      const rotationStatus = await this.checkKeyRotationStatus(keyName, 'api');
+
+      // Build audit summary
+      const auditSummary = {
+        totalRotations: keyMetadata.rotationCount,
+        lastRotation: keyMetadata.lastRotatedAt,
+        lastHealthCheck: keyMetadata.auditTrail?.lastHealthCheck,
+        lastAccess: keyMetadata.usageTracking?.lastAccessedAt,
+        currentStatus: keyMetadata.statusTracking?.currentStatus || 'unknown',
+        totalAuditEvents: keyMetadata.auditTrail?.auditTrail?.length || 0,
+      };
+
+      return {
+        exists: true,
+        metadata: keyMetadata,
+        rotationStatus,
+        auditSummary,
+      };
+    } catch (error) {
+      ErrorHandler.captureError(
+        error,
+        'getComprehensiveKeyInfo',
+        `Failed to get comprehensive info for key "${keyName}"`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Calculates the age of a key in days
+   */
+  private calculateKeyAge(metadata: KeyMetadata): number {
+    const referenceDate = metadata.lastRotatedAt || metadata.createdAt;
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - referenceDate.getTime());
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  }
+
+  /**
+   * Records a scheduled check event
+   */
+  private async recordScheduledCheck(
+    keyName: string,
+    checkType: 'startup' | 'scheduled' | 'manual',
+    result: 'passed' | 'warning' | 'failed',
+    action: 'none' | 'rotated' | 'notification_sent',
+    daysUntilExpiry: number,
+    details?: string,
+  ): Promise<void> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      if (!metadata[keyName]) return;
+
+      if (!metadata[keyName].auditTrail) {
+        metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+      }
+
+      if (!metadata[keyName].auditTrail.scheduledRotationHistory) {
+        metadata[keyName].auditTrail.scheduledRotationHistory = [];
+      }
+
+      metadata[keyName].auditTrail.scheduledRotationHistory.push({
+        timestamp: new Date(),
+        checkType,
+        result,
+        action,
+        daysUntilExpiry,
+        details,
+      });
+
+      metadata[keyName].auditTrail.lastScheduledCheck = new Date();
+      await this.metadataRepo.writeKeyMetadata(metadata);
+    } catch (error) {
+      logger.error('Failed to record scheduled check', error);
+    }
+  }
+
+  /**
+   * Records an audit event
+   */
+  public async recordAuditEvent(
+    keyName: string,
+    eventType: 'created' | 'rotated' | 'accessed' | 'warning_issued' | 'expired' | 'health_check',
+    severity: 'info' | 'warning' | 'error' | 'critical',
+    source: string,
+    details: string,
+    additionalMetadata?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      if (!metadata[keyName]) return;
+
+      if (!metadata[keyName].auditTrail) {
+        metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+      }
+
+      if (!metadata[keyName].auditTrail.auditTrail) {
+        metadata[keyName].auditTrail.auditTrail = [];
+      }
+
+      metadata[keyName].auditTrail.auditTrail.push({
+        timestamp: new Date(),
+        eventType,
+        severity,
+        source,
+        details,
+        metadata: additionalMetadata,
+      });
+
+      if (metadata[keyName].auditTrail.auditTrail.length > 100) {
+        metadata[keyName].auditTrail.auditTrail =
+          metadata[keyName].auditTrail.auditTrail.slice(-100);
+      }
+
+      await this.metadataRepo.writeKeyMetadata(metadata);
+    } catch (error) {
+      logger.error('Failed to record audit event', error);
+    }
+  }
+
+  /**
+   * Records a health check event
+   */
+  private async recordHealthCheck(
+    keyName: string,
+    ageInDays: number,
+    daysUntilExpiry: number,
+    status: 'healthy' | 'warning' | 'critical',
+    checkSource: 'startup' | 'scheduled' | 'manual' | 'api',
+    recommendations?: string[],
+  ): Promise<void> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      if (!metadata[keyName]) return;
+
+      if (!metadata[keyName].auditTrail) {
+        metadata[keyName].auditTrail = this.createEmptyAuditTrail();
+      }
+
+      if (!metadata[keyName].auditTrail.healthCheckHistory) {
+        metadata[keyName].auditTrail.healthCheckHistory = [];
+      }
+
+      metadata[keyName].auditTrail.healthCheckHistory.push({
+        timestamp: new Date(),
+        ageInDays,
+        daysUntilExpiry,
+        status,
+        checkSource,
+        recommendations,
+      });
+
+      metadata[keyName].auditTrail.lastHealthCheck = new Date();
+
+      if (!metadata[keyName].statusTracking) {
+        metadata[keyName].statusTracking = this.createDefaultStatusTracking(
+          this.keyRotationConfig.enableAutoRotation,
+        );
+      } else if (metadata[keyName].statusTracking.currentStatus !== status) {
+        metadata[keyName].statusTracking.currentStatus = status;
+        metadata[keyName].statusTracking.lastStatusChange = new Date();
+      }
+
+      if (metadata[keyName].auditTrail.healthCheckHistory.length > 50) {
+        metadata[keyName].auditTrail.healthCheckHistory =
+          metadata[keyName].auditTrail.healthCheckHistory.slice(-50);
+      }
+
+      await this.metadataRepo.writeKeyMetadata(metadata);
+    } catch (error) {
+      logger.error('Failed to record health check', error);
+    }
+  }
+
+  /**
+   * Performs system-wide audit with detailed reporting
+   */
+  public async performComprehensiveAudit(): Promise<{
+    systemHealth: 'healthy' | 'warning' | 'critical';
+    keysNeedingRotation: string[];
+    keysNeedingWarning: string[];
+    auditSummary: {
+      totalKeys: number;
+      healthyKeys: number;
+      warningKeys: number;
+      criticalKeys: number;
+      averageKeyAge: number;
+      oldestKeyAge: number;
+      newestKeyAge: number;
+    };
+    recommendations: string[];
+  }> {
+    const { keysNeedingRotation, keysNeedingWarning } = await this.checkAllKeysForRotation();
+    const metadata = await this.metadataRepo.readKeyMetadata();
+
+    const allKeys = Object.keys(metadata).filter((key) => key !== 'SYSTEM');
+    const totalKeys = allKeys.length;
+    const criticalKeys = keysNeedingRotation.length;
+    const warningKeys = keysNeedingWarning.length;
+    const healthyKeys = totalKeys - criticalKeys - warningKeys;
+
+    // Calculate age statistics
+    const keyAges = allKeys.map((keyName) => this.calculateKeyAge(metadata[keyName]));
+    const averageKeyAge =
+      keyAges.length > 0 ? keyAges.reduce((a, b) => a + b, 0) / keyAges.length : 0;
+    const oldestKeyAge = keyAges.length > 0 ? Math.max(...keyAges) : 0;
+    const newestKeyAge = keyAges.length > 0 ? Math.min(...keyAges) : 0;
+
+    // Determine system health
+    let systemHealth: 'healthy' | 'warning' | 'critical';
+    if (criticalKeys > 0) {
+      systemHealth = 'critical';
+    } else if (warningKeys > 0) {
+      systemHealth = 'warning';
+    } else {
+      systemHealth = 'healthy';
+    }
+
+    // Generate recommendations
+    const recommendations: string[] = [];
+    if (criticalKeys > 0) {
+      recommendations.push(`${criticalKeys} key(s) require immediate rotation`);
+    }
+    if (warningKeys > 0) {
+      recommendations.push(`${warningKeys} key(s) should be rotated soon`);
+    }
+    if (averageKeyAge > this.keyRotationConfig.maxAgeInDays * 0.8) {
+      recommendations.push('Consider reducing key rotation intervals');
+    }
+
+    return {
+      systemHealth,
+      keysNeedingRotation,
+      keysNeedingWarning,
+      auditSummary: {
+        totalKeys,
+        healthyKeys,
+        warningKeys,
+        criticalKeys,
+        averageKeyAge: Math.round(averageKeyAge * 100) / 100,
+        oldestKeyAge,
+        newestKeyAge,
+      },
+      recommendations,
+    };
+  }
+
+  /**
+   * Records key access for usage tracking
+   */
+  public async recordKeyAccess(keyName: string, accessSource: string): Promise<void> {
+    try {
+      const metadata = await this.metadataRepo.readKeyMetadata();
+      if (!metadata[keyName]) return;
+
+      // Update last accessed time
+      if (!metadata[keyName].usageTracking) {
+        metadata[keyName].usageTracking = {
+          environmentsUsedIn: [],
+          dependentVariables: [],
+        };
+      }
+
+      metadata[keyName].usageTracking.lastAccessedAt = new Date();
+      await this.metadataRepo.writeKeyMetadata(metadata);
+
+      // Record audit event
+      await this.recordAuditEvent(
+        keyName,
+        'accessed',
+        'info',
+        accessSource,
+        `Key accessed from ${accessSource}`,
+      );
+    } catch (error) {
+      logger.error('Failed to record key access', error);
+    }
+  }
+
+  public async validateAndRepairAllMetadata(): Promise<{
+    totalKeys: number;
+    repairedKeys: string[];
+    errors: Array<{ keyName: string; error: string }>;
+  }> {
+    const metadata = await this.metadataRepo.readKeyMetadata();
+    const repairedKeys: string[] = [];
+    const errors: Array<{ keyName: string; error: string }> = [];
+
+    for (const [keyName, keyMetadata] of Object.entries(metadata)) {
+      if (keyName === 'SYSTEM') continue; // Skip system metadata
+
+      try {
+        this.validateRotationConfig(keyMetadata.rotationConfig);
+      } catch (error) {
+        try {
+          const errorAsError = error as Error;
+
+          // Attempt to repair with default config
+          keyMetadata.rotationConfig = {
+            maxAgeInDays: this.keyRotationConfig.maxAgeInDays,
+            warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
+            enableAutoRotation: this.keyRotationConfig.enableAutoRotation,
+          };
+          repairedKeys.push(keyName);
+
+          // Log the repair
+          await this.recordAuditEvent(
+            keyName,
+            'rotated', // or create a new event type like 'metadata_repaired'
+            'warning',
+            'validateAndRepairAllMetadata',
+            `Repaired invalid rotation config: ${errorAsError.message}`,
+          );
+        } catch (repairError) {
+          const errorAsError = repairError as Error;
+          errors.push({
+            keyName,
+            error: `Failed to repair: ${errorAsError.message}`,
+          });
+        }
+      }
+    }
+
+    if (repairedKeys.length > 0) {
+      await this.metadataRepo.writeKeyMetadata(metadata);
+      logger.info(`Repaired rotation config for keys: ${repairedKeys.join(', ')}`);
+    }
+
+    return {
+      totalKeys: Object.keys(metadata).length - 1, // Exclude SYSTEM
+      repairedKeys,
+      errors,
+    };
+  }
+
+  public createEmptyAuditTrail(): AuditTrail {
+    return {
+      scheduledRotationHistory: [],
+      auditTrail: [],
+      rotationHistory: [],
+      healthCheckHistory: [],
+    };
+  }
+
+  // Helper function to create default usage tracking
+  public createDefaultUsageTracking(): UsageTracking {
+    return {
+      environmentsUsedIn: [],
+      dependentVariables: [],
+    };
+  }
+
+  public createDefaultStatusTracking(autoRotationEnabled: boolean): StatusTracking {
+    return {
+      currentStatus: 'healthy',
+      lastStatusChange: new Date(),
+      autoRotationEnabled,
+    };
+  }
+
+  /**
+   * Simple key hashing for audit purposes (not for security)
+   */
+  public hashKey(key: string): string {
+    // Simple hash for audit trail - not cryptographically secure
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      const char = key.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16);
+  }
+
+  private validateRotationConfig(config: KeyRotationConfig): KeyRotationConfig {
+    if (!config || typeof config !== 'object') {
+      throw new Error('Invalid rotation config: config must be an object');
+    }
+
+    if (typeof config.maxAgeInDays !== 'number' || config.maxAgeInDays <= 0) {
+      throw new Error('Invalid rotation config: maxAgeInDays must be a positive number');
+    }
+
+    if (typeof config.warningThresholdInDays !== 'number' || config.warningThresholdInDays < 0) {
+      throw new Error(
+        'Invalid rotation config: warningThresholdInDays must be a non-negative number',
+      );
+    }
+
+    if (typeof config.enableAutoRotation !== 'boolean') {
+      throw new Error('Invalid rotation config: enableAutoRotation must be a boolean');
+    }
+
+    // Additional validation: warning threshold should be less than max age
+    if (config.warningThresholdInDays >= config.maxAgeInDays) {
+      throw new Error(
+        'Invalid rotation config: warningThresholdInDays must be less than maxAgeInDays',
+      );
+    }
+
+    return config as KeyRotationConfig;
+  }
+}
