@@ -13,6 +13,12 @@ export default class EnvironmentVariables {
   public static readonly API_BASE_URL = process.env.API_BASE_URL!;
   public static readonly PORTAL_BASE_URL = process.env.PORTAL_BASE_URL!;
 
+
+  // Secret Keys
+  public static readonly DEV_SECRET_KEY = process.env.DEV_SECRET_KEY!;
+  public static readonly UAT_SECRET_KEY = process.env.UAT_SECRET_KEY!;
+  public static readonly PROD_SECRET_KEY = process.env.PROD_SECRET_KEY!;
+
   // Users
 
   public static readonly ADMIN_USERNAME = process.env.ADMIN_USERNAME!;

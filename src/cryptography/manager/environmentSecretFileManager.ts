@@ -1,28 +1,25 @@
-import AsyncFileManager from '../fileSystem/asyncFileManager';
+import AsyncFileManager from '../../utils/fileSystem/asyncFileManager';
 import path from 'path';
 import { EnvironmentConstants } from '../../config/environment/dotenv/constants';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
-import ErrorHandler from '../errors/errorHandler';
-import logger from '../logging/loggerManager';
+import ErrorHandler from '../../utils/errors/errorHandler';
+import logger from '../../utils/logging/loggerManager';
 
 export class EnvironmentSecretFileManager {
+  private readonly DIRECTORY = EnvironmentConstants.ENV_DIR;
+  private readonly BASE_ENV_FILE = EnvironmentConstants.BASE_ENV_FILE;
+
   /**
    * Gets the base environment file path
-   * @returns Promise resolving to the base environment file path
-   * @throws Error if the environment directory does not exist or path resolution fails
    */
   public async getBaseEnvironmentFilePath(): Promise<string> {
     try {
-      const envDir = EnvironmentConstants.ENV_DIR;
-      const baseEnvFile = EnvironmentConstants.BASE_ENV_FILE;
-
-      // Ensure the environment directory exists
-      const dirExists = await AsyncFileManager.doesDirectoryExist(envDir);
+      const dirExists = await AsyncFileManager.doesDirectoryExist(this.DIRECTORY);
       if (!dirExists) {
-        await AsyncFileManager.ensureDirectoryExists(envDir);
+        await AsyncFileManager.ensureDirectoryExists(this.DIRECTORY);
       }
 
-      return AsyncFileManager.resolvePath(envDir, baseEnvFile);
+      return AsyncFileManager.resolvePath(this.DIRECTORY, this.BASE_ENV_FILE);
     } catch (error) {
       ErrorHandler.captureError(
         error,
@@ -35,22 +32,17 @@ export class EnvironmentSecretFileManager {
 
   /**
    * Checks if the base environment file exists
-   * @param baseEnvFilePath Path to check
-   * @returns Promise resolving to true if file exists, false otherwise
    */
   public async doesBaseEnvFileExist(baseEnvFilePath: string): Promise<boolean> {
     return AsyncFileManager.doesFileExist(baseEnvFilePath);
   }
 
   /**
-   * Returns the path to the environment file with the given file name.
-   * @param fileName Name of the environment file
-   * @returns Fully resolved path to the environment file
-   * @throws Error if path resolution fails
+   * Returns the path to the environment file with the given file name
    */
   public resolveEnvironmentFilePath(fileName: string): string {
     try {
-      return AsyncFileManager.resolvePath(EnvironmentConstants.ENV_DIR, fileName);
+      return AsyncFileManager.resolvePath(this.DIRECTORY, fileName);
     } catch (error) {
       ErrorHandler.captureError(
         error,
@@ -63,8 +55,6 @@ export class EnvironmentSecretFileManager {
 
   /**
    * Checks if an environment-specific file exists
-   * @param fileName Name of the file to check
-   * @returns Promise resolving to true if file exists, false otherwise
    */
   public async doesEnvironmentFileExist(fileName: string): Promise<boolean> {
     const filePath = this.resolveEnvironmentFilePath(fileName);
@@ -73,9 +63,6 @@ export class EnvironmentSecretFileManager {
 
   /**
    * Logs appropriate message when environment file is not found
-   * @param fileName Name of the file
-   * @param filePath Full path to the file
-   * @param envName Environment stage name
    */
   public logEnvironmentFileNotFound(fileName: string, filePath: string, envName: string): void {
     logger.warn(
@@ -84,31 +71,26 @@ export class EnvironmentSecretFileManager {
   }
 
   /**
-   * Handles the case where the base environment file is missing.
-   * @param baseEnvFilePath Path to the base environment file
-   * @throws Error if the base environment file is required and not found
-   * @returns Promise resolving to void
+   * Handles the case where the base environment file is missing
    */
   public async handleMissingBaseEnvFile(baseEnvFilePath: string): Promise<void> {
     const shouldRequireBaseFile = process.env.REQUIRE_BASE_ENV_FILE === 'true';
-    const isGeneratingKey = (process.env.PLAYWRIGHT_GREP || '').includes('@generate-key');
-    const envDir = EnvironmentConstants.ENV_DIR;
+    const isGeneratingKey = (process.env.PLAYWRIGHT_GREP || '').includes('@rotatable-key');
     const baseEnvFile = EnvironmentConstants.BASE_ENV_FILE;
 
-    // Skip warning completely when generating keys
     if (isGeneratingKey) {
       return;
     }
 
     if (shouldRequireBaseFile) {
       ErrorHandler.logAndThrow(
-        `Required base environment file not found at ${baseEnvFilePath}. Expected location: ${path.join(envDir, baseEnvFile)}`,
+        `Required base environment file not found at ${baseEnvFilePath}. Expected location: ${path.join(this.DIRECTORY, baseEnvFile)}`,
         'handleMissingBaseEnvFile',
       );
     } else {
       const warningMessage = [
         `Base environment file not found at: ${baseEnvFilePath}.`,
-        `Expected location based on configuration: ${path.join(envDir, baseEnvFile)}.`,
+        `Expected location based on configuration: ${path.join(this.DIRECTORY, baseEnvFile)}.`,
         `This file is optional if you are running the secret key generation for the first time.`,
         `To suppress this warning in future runs, ensure the file exists or set 'REQUIRE_BASE_ENV_FILE=false'.`,
       ].join('\n');
@@ -117,9 +99,9 @@ export class EnvironmentSecretFileManager {
   }
 
   /**
-   * Reads content from the base environment file or creates it if it doesn't exist.
+   * Reads content from the base environment file or creates it if it doesn't exist
    */
-  private async getOrCreateBaseEnvFileContent(filePath: string): Promise<string> {
+  public async getOrCreateBaseEnvFileContent(filePath: string): Promise<string> {
     try {
       const fileExists = await AsyncFileManager.ensureFileExists(filePath);
 
@@ -142,7 +124,10 @@ export class EnvironmentSecretFileManager {
     }
   }
 
-  private async writeSecretKeyVariableToBaseEnvFile(
+  /**
+   * Writes secret key variable to base environment file
+   */
+  public async writeSecretKeyVariableToBaseEnvFile(
     filePath: string,
     content: string,
     keyName: string,
@@ -160,11 +145,12 @@ export class EnvironmentSecretFileManager {
   }
 
   /**
-   * Gets the value of a given key from the base environment file.
+   * Gets the value of a given key from the base environment file
    */
   public async getKeyValue(filePath: string, keyName: string): Promise<string | undefined> {
     try {
-      const fileContent = await this.getOrCreateBaseEnvFileContent(filePath);
+      const resolvePath = path.resolve(this.DIRECTORY, filePath);
+      const fileContent = await this.getOrCreateBaseEnvFileContent(resolvePath);
       const regex = new RegExp(`^${keyName}=(.*)$`, 'm');
       const match = fileContent.match(regex);
       return match ? match[1] : undefined;
@@ -179,38 +165,38 @@ export class EnvironmentSecretFileManager {
   }
 
   /**
-   * Stores a new key-value pair in the base environment file if it doesn't already exist.
+   * Updates an existing key value in the environment file
    */
-  public async storeBaseEnvironmentKey(
-    filePath: string,
-    keyName: string,
-    keyValue: string,
-  ): Promise<void> {
+  public async updateKeyValue(filePath: string, keyName: string, newValue: string): Promise<void> {
     try {
-      let fileContent = await this.getOrCreateBaseEnvFileContent(filePath);
+      // Resolve the full path properly
+      const resolvedPath = path.resolve(this.DIRECTORY, filePath);
 
-      const keyExists = new RegExp(`^${keyName}=`, 'm').test(fileContent);
-      if (keyExists) {
-        logger.info(
-          `The environment variable "${keyName}" already exists. Delete it before regenerating.`,
-        );
-        return;
+      // Get current file content
+      let fileContent = await this.getOrCreateBaseEnvFileContent(resolvedPath);
+
+      // Create regex to match the key line
+      const regex = new RegExp(`^${keyName}=.*$`, 'm');
+
+      if (regex.test(fileContent)) {
+        // Key exists - replace it
+        fileContent = fileContent.replace(regex, `${keyName}=${newValue}`);
+        logger.debug(`Key "${keyName}" found and updated`);
+      } else {
+        // Key doesn't exist - add it
+        if (fileContent && !fileContent.endsWith('\n')) {
+          fileContent += '\n';
+        }
+        fileContent += `${keyName}=${newValue}`;
+        logger.debug(`Key "${keyName}" not found, added to end of file`);
       }
 
-      if (fileContent && !fileContent.endsWith('\n')) {
-        fileContent += '\n';
-      }
+      // Write the updated content back to the file
+      await this.writeSecretKeyVariableToBaseEnvFile(resolvedPath, fileContent, keyName);
 
-      fileContent += `${keyName}=${keyValue}`;
-
-      await this.writeSecretKeyVariableToBaseEnvFile(filePath, fileContent, keyName);
-      logger.info(`Environment variable "${keyName}" has been added successfully.`);
+      //logger.info(`Successfully updated key "${keyName}" in ${resolvedPath}`);
     } catch (error) {
-      ErrorHandler.captureError(
-        error,
-        'storeBaseEnvKey',
-        `Failed to store key "${keyName}" in environment file.`,
-      );
+      ErrorHandler.captureError(error, 'updateKeyValue', `Failed to update key "${keyName}" value`);
       throw error;
     }
   }

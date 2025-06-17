@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
-import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
+import { EnvironmentSecretFileManager } from '../../cryptography/manager/environmentSecretFileManager';
 import EnvironmentDetector from '../../config/environment/detector/detector';
 import {
   EnvironmentStage,
@@ -150,7 +150,7 @@ export default class EnvironmentConfigManager {
         this.loadedFiles.push(baseName);
         logger.info(`Successfully loaded base environment file: ${baseName}`);
       } else {
-        //await this.environmentSecretFileManager.handleMissingBaseEnvFile(baseEnvFilePath);
+        //await this.secretKeyManager.handleMissingBaseEnvFile(baseEnvFilePath);
         // To show .env warning if not available, uncomment line above. currently we not using encryption but was added for future proof
       }
     } catch (error) {

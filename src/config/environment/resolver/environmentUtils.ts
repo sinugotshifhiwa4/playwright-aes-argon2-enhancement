@@ -1,5 +1,5 @@
 import EnvironmentDetector from '../detector/detector';
-import EncryptionService from '../../../cryptography/service/encryptionService';
+import { CryptoService } from '../../../cryptography/service/cryptoService';
 import SanitizationConfig from '../../../utils/sanitization/sanitizationConfig';
 import { Credentials } from '../../types/auth/credentials.types';
 import { EnvironmentSecretKeys } from '../dotenv/constants';
@@ -61,8 +61,8 @@ export class EnvironmentUtils {
   ): Promise<Credentials> {
     try {
       return {
-        username: await EncryptionService.decrypt(username, secretKey),
-        password: await EncryptionService.decrypt(password, secretKey),
+        username: await CryptoService.decrypt(username, secretKey),
+        password: await CryptoService.decrypt(password, secretKey),
       };
     } catch (error) {
       ErrorHandler.captureError(error, 'decryptCredentials', 'Failed to decrypt credentials');

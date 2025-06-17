@@ -1,5 +1,5 @@
 import EnvironmentConfigLoader from '../../../utils/environment/environmentConfigManager';
-import { EnvironmentSecretFileManager } from '../../../utils/environment/environmentSecretFileManager';
+import { EnvironmentSecretFileManager } from '../../../cryptography/manager/environmentSecretFileManager';
 import ErrorHandler from '../../../utils/errors/errorHandler';
 
 async function globalSetup(): Promise<void> {

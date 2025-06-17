@@ -74,13 +74,13 @@ export default class ErrorHandler {
     }
   }
 
-  /**
-   * Log and throw an error with the provided message
-   */
-  public static logAndThrow(message: string, source: string): never {
-    this.captureError(new Error(message), source);
-    throw new Error(message);
-  }
+public static logAndThrow(message: string): never;
+public static logAndThrow(message: string, source: string): never;
+public static logAndThrow(message: string, source: string = 'Source not specified'): never {
+  this.captureError(new Error(message), source);
+  throw new Error(message);
+}
+
 
   /**
    * Log error but continue execution
