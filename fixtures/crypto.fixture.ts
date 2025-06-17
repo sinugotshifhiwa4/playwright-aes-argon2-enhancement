@@ -1,8 +1,8 @@
 import { test as cryptoBaseTest } from '@playwright/test';
 
 import { KeyRotationManager } from '../src/utils/environment/keyRotationManager';
-import { KeyMetadataRepository } from '../src/utils/environment/keyMetadataRepository';
-import { EnvironmentSecretFileManager } from '../src/utils/environment/environmentSecretFileManager';
+import { KeyMetadataRepository } from '../src/cryptography/key/keyMetadataRepository';
+import { EnvironmentSecretFileManager } from '../src/cryptography/manager/environmentSecretFileManager';
 import { KeyRotationService } from '../src/cryptography/service/keyRotationService';
 import { CryptoService } from '../src/cryptography/service/cryptoService';
 import { EncryptionManager } from '../src/cryptography/manager/encryptionManager';
@@ -24,8 +24,23 @@ export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
   keyRotationManager: async ({ environmentSecretFileManager, keyMetadataRepository }, use) => {
     await use(new KeyRotationManager(environmentSecretFileManager, keyMetadataRepository));
   },
-  keyRotationService: async ({ environmentSecretFileManager, keyMetadataRepository, environmentFileParser, keyRotationManager }, use) => {
-    await use(new KeyRotationService(environmentSecretFileManager, keyMetadataRepository, environmentFileParser, keyRotationManager));
+  keyRotationService: async (
+    {
+      environmentSecretFileManager,
+      keyMetadataRepository,
+      environmentFileParser,
+      keyRotationManager,
+    },
+    use,
+  ) => {
+    await use(
+      new KeyRotationService(
+        environmentSecretFileManager,
+        keyMetadataRepository,
+        environmentFileParser,
+        keyRotationManager,
+      ),
+    );
   },
   keyMetadataRepository: async ({ environmentSecretFileManager }, use) => {
     await use(new KeyMetadataRepository(environmentSecretFileManager));
@@ -42,7 +57,10 @@ export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
   environmentFileParser: async ({}, use) => {
     await use(new EnvironmentFileParser());
   },
-  encryptionCoordinator: async ({ keyRotationManager, encryptionManager, keyRotationService }, use) => {
+  encryptionCoordinator: async (
+    { keyRotationManager, encryptionManager, keyRotationService },
+    use,
+  ) => {
     await use(new EncryptionCoordinator(keyRotationManager, encryptionManager, keyRotationService));
   },
 });

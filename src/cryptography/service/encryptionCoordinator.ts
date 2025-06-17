@@ -1,7 +1,7 @@
 import { EncryptionManager } from '../manager/encryptionManager';
-import { KeyRotationManager } from '../../utils/environment/keyRotationManager';
+import { KeyRotationManager } from '../manager/keyRotationManager';
 import { KeyRotationService } from './keyRotationService';
-import { KeyRotationConfigDefaults } from '../../../src/cryptography/config/keyRotationConfig.constants';
+import { KeyRotationConfigDefaults } from '../constants/keyRotationConfig.constants';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';
 
@@ -10,7 +10,11 @@ export class EncryptionCoordinator {
   private keyRotationManager: KeyRotationManager;
   private keyRotationService: KeyRotationService;
 
-  constructor(keyRotationmanager: KeyRotationManager, encryptionManager: EncryptionManager, keyRotationService: KeyRotationService) {
+  constructor(
+    keyRotationmanager: KeyRotationManager,
+    encryptionManager: EncryptionManager,
+    keyRotationService: KeyRotationService,
+  ) {
     this.keyRotationManager = keyRotationmanager;
     this.encryptionManager = encryptionManager;
     this.keyRotationService = keyRotationService;
@@ -53,7 +57,10 @@ export class EncryptionCoordinator {
     }
 
     // Resolve the target file path and store the key
-    const resolvedPath = await this.encryptionManager.resolveFilePath(directory, environmentBaseFilePath);
+    const resolvedPath = await this.encryptionManager.resolveFilePath(
+      directory,
+      environmentBaseFilePath,
+    );
 
     await this.keyRotationManager.storeBaseEnvironmentKey(
       resolvedPath,
@@ -112,8 +119,7 @@ export class EncryptionCoordinator {
   //   }
   // }
 
-
-   /**
+  /**
    * Rotates a key and re-encrypts data with selective override capability
    */
   public async rotateKeyAndReEncryptData(
@@ -123,17 +129,17 @@ export class EncryptionCoordinator {
     environmentVariables: string[], // Array of env variables to be encrypted on rotation
     reason: 'scheduled' | 'manual' | 'expired' | 'security_breach',
     customMaxAge?: number,
-    shouldRotateKey: boolean = false // Controls whether to override existing encrypted data
+    shouldRotateKey: boolean = false, // Controls whether to override existing encrypted data
   ) {
     try {
       return await this.keyRotationService.rotateKeyWithAudit(
-        keyFilePath, 
-        keyName, 
-        newKeyValue, 
-        environmentVariables, 
-        reason, 
+        keyFilePath,
+        keyName,
+        newKeyValue,
+        environmentVariables,
+        reason,
         customMaxAge,
-        shouldRotateKey
+        shouldRotateKey,
       );
     } catch (error) {
       ErrorHandler.captureError(
@@ -159,11 +165,11 @@ export class EncryptionCoordinator {
   // ) {
   //   try {
   //     return await this.keyRotationManager.rotateKeyForSingleEnvironment(
-  //       keyFilePath, 
-  //       keyName, 
-  //       newKeyValue, 
-  //       environmentFilePath, 
-  //       reason, 
+  //       keyFilePath,
+  //       keyName,
+  //       newKeyValue,
+  //       environmentFilePath,
+  //       reason,
   //       customMaxAge,
   //       shouldRotateKey
   //     );

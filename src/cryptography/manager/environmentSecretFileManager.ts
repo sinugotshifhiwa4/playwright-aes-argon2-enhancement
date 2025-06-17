@@ -1,9 +1,9 @@
-import AsyncFileManager from '../fileSystem/asyncFileManager';
+import AsyncFileManager from '../../utils/fileSystem/asyncFileManager';
 import path from 'path';
 import { EnvironmentConstants } from '../../config/environment/dotenv/constants';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
-import ErrorHandler from '../errors/errorHandler';
-import logger from '../logging/loggerManager';
+import ErrorHandler from '../../utils/errors/errorHandler';
+import logger from '../../utils/logging/loggerManager';
 
 export class EnvironmentSecretFileManager {
   private readonly DIRECTORY = EnvironmentConstants.ENV_DIR;
@@ -167,67 +167,37 @@ export class EnvironmentSecretFileManager {
   /**
    * Updates an existing key value in the environment file
    */
-  // public async updateKeyValue(filePath: string, keyName: string, newValue: string): Promise<void> {
-  //   try {
-  //     const resolvedPath = path.resolve(this.DIRECTORY, filePath);
-  //     let fileContent = await this.getOrCreateBaseEnvFileContent(resolvedPath);
-  //     logger.info(`update key value has content for debugging: ${fileContent}`);
-  //     const regex = new RegExp(`^${keyName}=.*$`, 'm');
+  public async updateKeyValue(filePath: string, keyName: string, newValue: string): Promise<void> {
+    try {
+      // Resolve the full path properly
+      const resolvedPath = path.resolve(this.DIRECTORY, filePath);
 
-  //     if (regex.test(fileContent)) {
-  //       fileContent = fileContent.replace(regex, `${keyName}=${newValue}`);
-  //     } else {
-  //       if (fileContent && !fileContent.endsWith('\n')) {
-  //         fileContent += '\n';
-  //       }
-  //       fileContent += `${keyName}=${newValue}`;
-  //     }
+      // Get current file content
+      let fileContent = await this.getOrCreateBaseEnvFileContent(resolvedPath);
 
-  //     await this.writeSecretKeyVariableToBaseEnvFile(resolvedPath, fileContent, keyName);
-  //   } catch (error) {
-  //     ErrorHandler.captureError(error, 'updateKeyValue', `Failed to update key "${keyName}" value`);
-  //     throw error;
-  //   }
-  // }
+      // Create regex to match the key line
+      const regex = new RegExp(`^${keyName}=.*$`, 'm');
 
-  /**
- * Updates an existing key value in the environment file
- */
-public async updateKeyValue(filePath: string, keyName: string, newValue: string): Promise<void> {
-  try {
-    // Resolve the full path properly
-    const resolvedPath = path.resolve(this.DIRECTORY, filePath);
-    
-    // Get current file content
-    let fileContent = await this.getOrCreateBaseEnvFileContent(resolvedPath);
-    
-    logger.debug(`Updating key "${keyName}" in file: ${resolvedPath}`);
-    logger.debug(`Current file content preview: ${fileContent.substring(0, 100)}...`);
-    
-    // Create regex to match the key line
-    const regex = new RegExp(`^${keyName}=.*$`, 'm');
-    
-    if (regex.test(fileContent)) {
-      // Key exists - replace it
-      fileContent = fileContent.replace(regex, `${keyName}=${newValue}`);
-      logger.debug(`Key "${keyName}" found and updated`);
-    } else {
-      // Key doesn't exist - add it
-      if (fileContent && !fileContent.endsWith('\n')) {
-        fileContent += '\n';
+      if (regex.test(fileContent)) {
+        // Key exists - replace it
+        fileContent = fileContent.replace(regex, `${keyName}=${newValue}`);
+        logger.debug(`Key "${keyName}" found and updated`);
+      } else {
+        // Key doesn't exist - add it
+        if (fileContent && !fileContent.endsWith('\n')) {
+          fileContent += '\n';
+        }
+        fileContent += `${keyName}=${newValue}`;
+        logger.debug(`Key "${keyName}" not found, added to end of file`);
       }
-      fileContent += `${keyName}=${newValue}`;
-      logger.debug(`Key "${keyName}" not found, added to end of file`);
+
+      // Write the updated content back to the file
+      await this.writeSecretKeyVariableToBaseEnvFile(resolvedPath, fileContent, keyName);
+
+      //logger.info(`Successfully updated key "${keyName}" in ${resolvedPath}`);
+    } catch (error) {
+      ErrorHandler.captureError(error, 'updateKeyValue', `Failed to update key "${keyName}" value`);
+      throw error;
     }
-    
-    // Write the updated content back to the file
-    await this.writeSecretKeyVariableToBaseEnvFile(resolvedPath, fileContent, keyName);
-    
-    logger.info(`Successfully updated key "${keyName}" in ${resolvedPath}`);
-    
-  } catch (error) {
-    ErrorHandler.captureError(error, 'updateKeyValue', `Failed to update key "${keyName}" value`);
-    throw error;
   }
-}
 }

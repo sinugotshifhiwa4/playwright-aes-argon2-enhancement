@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { SECURITY_CONFIG } from '../config/security.constant';
+import { SECURITY_CONFIG } from '../constants/security.constant';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
 import ErrorHandler from '../../utils/errors/errorHandler';
 

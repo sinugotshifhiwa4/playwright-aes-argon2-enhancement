@@ -1,5 +1,5 @@
 import { test } from '../../fixtures/crypto.fixture';
-import SecureKeyGenerator from '../../src/cryptography/keyGenerator/secureKeyGenerator';
+import SecureKeyGenerator from '../../src/cryptography/key/secureKeyGenerator';
 import {
   EnvironmentConstants,
   EnvironmentSecretKeys,
@@ -8,8 +8,6 @@ import { EnvironmentFilePaths } from '../../src/config/environment/dotenv/mappin
 import { EncryptionTargets } from '../../src/config/environment/variables/encryptionTargets';
 //import ENV from '../../src/config/environment/variables/variables';
 import logger from '../../src/utils/logging/loggerManager';
-
-
 
 test.describe('Key Rotation @key-rotation Test Suite', () => {
   test('Generate rotatable secret key @rotatable-key', async ({ encryptionCoordinator }) => {

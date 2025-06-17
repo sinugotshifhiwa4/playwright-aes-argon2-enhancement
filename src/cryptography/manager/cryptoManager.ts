@@ -1,14 +1,13 @@
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
-import { EnvironmentSecretFileManager } from '../../utils/environment/environmentSecretFileManager';
-import { SECURITY_CONFIG } from '../config/security.constant';
-import { COMMON_WEAK_KEYS } from '../config/commonWeakKeys';
+import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
+import { SECURITY_CONFIG } from '../constants/security.constant';
+import { COMMON_WEAK_KEYS } from '../key/commonWeakKeys';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
-import { SECURITY_CONSTANTS } from '../config/security.constant';
+import { SECURITY_CONSTANTS } from '../constants/security.constant';
 import ErrorHandler from '../../utils/errors/errorHandler';
 
 export class CryptoManager {
-
   public static isEncrypted(value: string): boolean {
     if (!value || typeof value !== 'string') return false;
 
@@ -28,7 +27,10 @@ export class CryptoManager {
       // Create instance of SecretKeyManager
       const environmentSecretFileManager = new EnvironmentSecretFileManager();
       const baseEnvFilePath = await environmentSecretFileManager.getBaseEnvironmentFilePath();
-      const secretKeyValue = await environmentSecretFileManager.getKeyValue(baseEnvFilePath, secretKeyVariable);
+      const secretKeyValue = await environmentSecretFileManager.getKeyValue(
+        baseEnvFilePath,
+        secretKeyVariable,
+      );
 
       if (!secretKeyValue) {
         ErrorHandler.logAndThrow(

@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
-import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
+import { EnvironmentSecretFileManager } from '../../cryptography/manager/environmentSecretFileManager';
 import EnvironmentDetector from '../../config/environment/detector/detector';
 import {
   EnvironmentStage,

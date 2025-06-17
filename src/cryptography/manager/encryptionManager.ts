@@ -449,7 +449,7 @@
 // }
 
 import { CryptoService } from '../service/cryptoService';
-import { SECURITY_CONSTANTS } from '../config/security.constant';
+import { SECURITY_CONSTANTS } from '../constants/security.constant';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';
 import { EnvironmentFileParser } from './environmentFileParser';
@@ -483,7 +483,6 @@ export class EncryptionManager {
     forceReEncryption: boolean = false,
   ): Promise<void> {
     try {
-    
       const envFileLines = await this.environmentFileParser.readEnvironmentFileAsLines(
         directory,
         environmentFilePath,
@@ -528,7 +527,11 @@ export class EncryptionManager {
         forceReEncryption,
       );
     } catch (error) {
-      ErrorHandler.captureError(error, 'encryptAndUpdateEnvironmentVariables', `Failed to encrypt environment variables in ${environmentFilePath}`);
+      ErrorHandler.captureError(
+        error,
+        'encryptAndUpdateEnvironmentVariables',
+        `Failed to encrypt environment variables in ${environmentFilePath}`,
+      );
       throw error;
     }
   }

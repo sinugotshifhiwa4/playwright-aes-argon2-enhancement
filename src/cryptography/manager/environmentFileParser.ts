@@ -1,5 +1,5 @@
 import AsyncFileManager from '../../utils/fileSystem/asyncFileManager';
-import { SECURITY_CONSTANTS } from '../config/security.constant';
+import { SECURITY_CONSTANTS } from '../constants/security.constant';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';

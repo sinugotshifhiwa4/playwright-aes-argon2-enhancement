@@ -22,5 +22,6 @@ export enum EnvironmentSecretKeys {
 export enum CryptoMetadata {
   DIRECTORY = '.cryptoMetadata',
   FILE_NAME = 'metadata.json',
+  ARCHIVE_DIRECTORY = 'archive',
 }
 

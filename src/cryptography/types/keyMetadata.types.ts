@@ -17,7 +17,7 @@ export interface KeyMetadata {
   statusTracking: StatusTracking;
 }
 
-// Tracks the current health and status of a key
+// Tracks the current status of a key
 export interface StatusTracking {
   currentStatus: 'healthy' | 'warning' | 'critical' | 'expired';
   lastStatusChange: Date;
@@ -65,7 +65,7 @@ export interface AuditEvent {
 // Key rotation event, includes success or error information
 export interface RotationEvent {
   timestamp: Date;
-  reason: 'scheduled' | 'manual' | 'expired' | 'security_breach';
+  reason: 'scheduled' | 'manual' | 'expired' | 'security_breach' | 'compromised';
   oldKeyHash?: string;
   newKeyHash?: string;
   affectedEnvironments: string[];
@@ -75,12 +75,26 @@ export interface RotationEvent {
   overrideMode?: boolean;
 }
 
+interface BaseRotationResult {
+  success: boolean;
+  reEncryptedCount: number;
+  errorDetails?: string;
+}
+
+export interface SingleRotationResult extends BaseRotationResult {
+  affectedFile: string;
+}
+
+export interface MultiRotationResult extends BaseRotationResult {
+  affectedFiles: string[];
+}
+
 // Periodic health check result
 export interface HealthCheckEvent {
   timestamp: Date;
   ageInDays: number;
   daysUntilExpiry: number;
-  status: 'healthy' | 'warning' | 'critical';
+  status: 'healthy' | 'warning' | 'critical' | 'expired';
   checkSource: 'startup' | 'scheduled' | 'manual' | 'api';
   recommendations?: string[];
 }

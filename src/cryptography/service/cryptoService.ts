@@ -1,7 +1,7 @@
-import SecureKeyGenerator from '../keyGenerator/secureKeyGenerator';
+import SecureKeyGenerator from '../key/secureKeyGenerator';
 import { CryptoManager } from '../manager/cryptoManager';
 import { FileEncoding } from '../../config/types/enums/file-encoding.enum';
-import { SECURITY_CONSTANTS } from '../config/security.constant';
+import { SECURITY_CONSTANTS } from '../constants/security.constant';
 import ErrorHandler from '../../utils/errors/errorHandler';
 
 export class CryptoService {
