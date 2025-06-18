@@ -9,6 +9,40 @@ import { EncryptionTargets } from '../../src/config/environment/variables/encryp
 //import ENV from '../../src/config/environment/variables/variables';
 import logger from '../../src/utils/logging/loggerManager';
 
+// import { test } from '../../fixtures/crypto.fixture';
+// import {
+//   EnvironmentConstants,
+//   EnvironmentSecretKeys,
+// } from '../../src/config/environment/dotenv/constants';
+// import { EnvironmentFilePaths } from '../../src/config/environment/dotenv/mapping';
+// import { VARIABLES_TO_ENCRYPT } from '../../src/config/environment/variables/getVariablesToEncrypt';
+
+// import logger from '../../src/utils/logging/loggerManager';
+
+// test.describe.serial('Encryption Flow @full-encryption', () => {
+//   test('Generate Secret Key @key-gen', async ({ cryptoOrchestrator }) => {
+//     await cryptoOrchestrator.generateSecretKey(
+//       EnvironmentConstants.ENV_DIR,
+//       EnvironmentConstants.BASE_ENV_FILE,
+//       EnvironmentSecretKeys.DEV,
+//     );
+
+//     logger.info('Secret key generation completed successfully.');
+//   });
+
+//   test('Encrypt Credentials @env-encrypt', async ({ cryptoOrchestrator }) => {
+//     await cryptoOrchestrator.encryptEnvironmentVariables(
+//       EnvironmentConstants.ENV_DIR,
+//       EnvironmentFilePaths.dev,
+//       EnvironmentSecretKeys.DEV,
+//       VARIABLES_TO_ENCRYPT.ADMIN_CREDENTIALS,
+//     );
+
+//     logger.info('Encryption process completed successfully.');
+//   });
+// });
+
+
 test.describe('Key Rotation @key-rotation Test Suite', () => {
   test('Generate rotatable secret key @rotatable-key', async ({ encryptionCoordinator }) => {
     await encryptionCoordinator.generateRotatableSecretKey(
@@ -20,17 +54,17 @@ test.describe('Key Rotation @key-rotation Test Suite', () => {
     );
   });
 
-  test('Rotate secret key and Re-encrypt data @del', async ({ encryptionCoordinator }) => {
-    await encryptionCoordinator.rotateKeyAndReEncryptData(
-      EnvironmentConstants.BASE_ENV_FILE,
-      EnvironmentSecretKeys.DEV,
-      SecureKeyGenerator.generateBase64SecretKey(),
-      [EnvironmentFilePaths.dev],
-      'manual',
-      100,
-      true,
-    );
-  });
+  // test('Rotate secret key and Re-encrypt data @del', async ({ encryptionCoordinator }) => {
+  //   await encryptionCoordinator.r(
+  //     EnvironmentConstants.BASE_ENV_FILE,
+  //     EnvironmentSecretKeys.DEV,
+  //     SecureKeyGenerator.generateBase64SecretKey(),
+  //     EnvironmentFilePaths.dev,
+  //     'manual',
+  //     100,
+  //     true,
+  //   );
+  // });
 
   // test('Rotate secret key and Re-encrypt data for single environment @single', async ({
   //   encryptionCoordinator,

@@ -8,8 +8,7 @@ import {
   KeyRotationConfig,
   KeyMetadata,
   RotationEvent,
-  MultiRotationResult,
-  SingleRotationResult,
+  RotationResult,
 } from '../types/keyMetadata.types';
 import { EnvironmentConstants } from '../../config/environment/dotenv/constants';
 import ErrorHandler from '../../utils/errors/errorHandler';
@@ -36,26 +35,29 @@ export class KeyRotationService {
     this.keyRotationManager = keyRotationManager;
   }
 
+  // Update the method signature
   public async rotateKeyWithAudit(
     keyFilePath: string,
     keyName: string,
     newKeyValue: string,
-    environmentVariables: string[],
+    environmentFile: string, // Changed from environmentVariables: string[] to single file
     reason: RotationEvent['reason'],
     customMaxAge?: number,
     shouldRotateKey: boolean = false,
-  ): Promise<MultiRotationResult> {
+  ): Promise<RotationResult> {
+    // Changed return type from MultiRotationResult to SingleRotationResult
     const startTime = new Date();
-    let rotationResult: MultiRotationResult = {
+    let rotationResult: RotationResult = {
       success: false,
       reEncryptedCount: 0,
-      affectedFiles: [],
+      affectedFile: environmentFile,
     };
-    let decryptedDataMap = new Map<string, Record<string, string>>();
+    let decryptedData: Record<string, string> = {};
+    let processedVariableNames: string[] = []; // Add this variable to track processed variables
 
     try {
       logger.info(
-        `Starting key rotation for: ${keyName}, reason: ${reason}, shouldRotateKey: ${shouldRotateKey}`,
+        `Starting key rotation for: ${keyName}, environment: ${environmentFile}, reason: ${reason}, shouldRotateKey: ${shouldRotateKey}`,
       );
 
       // Step 1: Validate the key exists and get comprehensive info
@@ -72,9 +74,6 @@ export class KeyRotationService {
         logger.warn(
           `Invalid rotation config for key "${keyName}", will repair: ${errorAsError.message}`,
         );
-
-        // Repair the config and continue
-        await this.keyRotationManager.validateAndRepairAllMetadata();
       }
 
       // Step 3: Record audit event for rotation start
@@ -83,12 +82,12 @@ export class KeyRotationService {
         'rotated',
         'info',
         'rotateKeyWithAudit',
-        `Starting key rotation (reason: ${reason})`,
+        `Starting key rotation for environment ${environmentFile} (reason: ${reason})`,
         {
           reason,
           customMaxAge,
           shouldRotateKey,
-          environmentVariablesCount: environmentVariables.length,
+          environmentFile,
         },
       );
 
@@ -98,12 +97,19 @@ export class KeyRotationService {
         throw new Error(`Key '${keyName}' not found in ${keyFilePath}`);
       }
 
-      // Step 5: Decrypt environment variables with OLD key
-      logger.info(`Decrypting environment variables with current key: ${keyName}`);
-      decryptedDataMap = await this.decryptEnvironmentEncryptedKeys(
+      // Step 5: Decrypt environment variables with OLD key for single file
+      logger.info(
+        `Decrypting environment variables in ${environmentFile} with current key: ${keyName}`,
+      );
+      decryptedData = await this.decryptSingleEnvironmentFile(
         keyName,
-        environmentVariables,
+        environmentFile,
         shouldRotateKey,
+      );
+
+      // Extract the actual variable names that were processed
+      processedVariableNames = Object.keys(decryptedData).filter(
+        (key) => decryptedData[key] !== undefined && decryptedData[key] !== null,
       );
 
       // Step 6: Update the key with the new value
@@ -119,14 +125,20 @@ export class KeyRotationService {
         throw new Error(`Failed to update key '${keyName}' - key value unchanged`);
       }
 
-      // Step 8: Re-encrypt data with the new key
-      logger.info(`Re-encrypting environment variables with new key: ${keyName}`);
-      const reEncryptedCount = await this.reEncryptEnvironmentVariables(decryptedDataMap, keyName);
+      // Step 8: Re-encrypt data with the new key for single file
+      logger.info(
+        `Re-encrypting environment variables in ${environmentFile} with new key: ${keyName}`,
+      );
+      const reEncryptedCount = await this.reEncryptSingleEnvironmentFile(
+        environmentFile,
+        decryptedData,
+        keyName,
+      );
 
       rotationResult = {
         success: true,
         reEncryptedCount,
-        affectedFiles: Array.from(decryptedDataMap.keys()),
+        affectedFile: environmentFile,
       };
 
       // Step 9: Update metadata with comprehensive tracking
@@ -136,15 +148,18 @@ export class KeyRotationService {
       const rotationConfig: KeyRotationConfig = {
         maxAgeInDays: customMaxAge || this.keyRotationManager.keyRotationConfig.maxAgeInDays,
         warningThresholdInDays: this.keyRotationManager.keyRotationConfig.warningThresholdInDays,
-        enableAutoRotation: this.keyRotationManager.keyRotationConfig.enableAutoRotation,
       };
 
       // Validate the new config
       const validatedConfig = this.keyRotationManager.validateRotationConfig(rotationConfig);
 
-      // Update usage tracking from the processed data
+      // Update usage tracking from the processed data (convert single file data to map format)
+      const singleFileMap = new Map<string, Record<string, string>>();
+      if (Object.keys(decryptedData).length > 0) {
+        singleFileMap.set(environmentFile, decryptedData);
+      }
       const updatedUsageTracking = this.keyRotationManager.updateUsageTracking(
-        decryptedDataMap,
+        singleFileMap,
         existingMetadata.usageTracking,
       );
 
@@ -158,7 +173,7 @@ export class KeyRotationService {
         usageTracking: updatedUsageTracking,
         statusTracking: {
           ...existingMetadata.statusTracking,
-          currentStatus: 'healthy', // Reset to healthy after successful rotation
+          currentStatus: 'healthy',
           lastStatusChange: new Date(),
         },
       };
@@ -169,24 +184,28 @@ export class KeyRotationService {
       await this.keyRotationManager.recordKeyAccess(keyName, 'rotation-service');
 
       // Step 11: Add health check entry for successful rotation
-      await this.keyRotationManager.addHealthCheckEntry(
-        keyName,
-        updatedMetadata,
-        true,
-        reason,
-        rotationResult,
-      );
+      await this.keyRotationManager.addHealthCheckEntry(keyName, updatedMetadata, true, reason, {
+        success: true,
+        reEncryptedCount: rotationResult.reEncryptedCount,
+        affectedFile: environmentFile,
+      });
 
-      // Step 12: Update comprehensive audit trail
+      // Step 12: Update comprehensive audit trail with actual processed variable names
       await this.keyRotationManager.updateAuditTrail(
         keyName,
         keyFilePath,
         reason,
         startTime,
         newKeyValue,
-        rotationResult,
+        {
+          success: true,
+          reEncryptedCount: rotationResult.reEncryptedCount,
+          affectedFile: environmentFile,
+        },
         shouldRotateKey,
         true,
+        undefined, // No error for successful rotation
+        processedVariableNames, // Pass the actual variable names here
       );
 
       // Step 13: Record successful audit event
@@ -195,19 +214,20 @@ export class KeyRotationService {
         'rotated',
         'info',
         'rotateKeyWithAudit',
-        `Key rotation completed successfully`,
+        `Key rotation completed successfully for environment ${environmentFile}`,
         {
           reason,
           rotationCount: updatedMetadata.rotationCount,
           reEncryptedCount: rotationResult.reEncryptedCount,
-          affectedFilesCount: rotationResult.affectedFiles.length,
+          environmentFile,
           durationMs: new Date().getTime() - startTime.getTime(),
           newMaxAge: validatedConfig.maxAgeInDays,
+          processedVariables: processedVariableNames, // Include in audit metadata
         },
       );
 
       logger.info(
-        `Key "${keyName}" rotated successfully. Re-encrypted ${reEncryptedCount} variables across ${rotationResult.affectedFiles.length} files. Rotation count: ${updatedMetadata.rotationCount}. Override mode: ${shouldRotateKey}`,
+        `Key "${keyName}" rotated successfully for environment ${environmentFile}. Re-encrypted ${reEncryptedCount} variables: ${processedVariableNames.join(', ')}. Rotation count: ${updatedMetadata.rotationCount}. Override mode: ${shouldRotateKey}`,
       );
 
       // Step 14: Perform post-rotation health check
@@ -219,11 +239,7 @@ export class KeyRotationService {
         `Post-rotation health check for "${keyName}": Age ${postRotationHealth.ageInDays} days, Status: ${postRotationHealth.needsRotation ? 'Critical' : postRotationHealth.needsWarning ? 'Warning' : 'Healthy'}`,
       );
 
-      return {
-        success: true,
-        reEncryptedCount: rotationResult.reEncryptedCount,
-        affectedFiles: rotationResult.affectedFiles,
-      };
+      return rotationResult;
     } catch (error) {
       const errorAsError = error instanceof Error ? error : new Error('Unknown error');
 
@@ -243,13 +259,11 @@ export class KeyRotationService {
 
       // Add health check entry for failed rotation
       if (currentMetadata) {
-        await this.keyRotationManager.addHealthCheckEntry(
-          keyName,
-          currentMetadata,
-          false,
-          reason,
-          rotationResult,
-        );
+        await this.keyRotationManager.addHealthCheckEntry(keyName, currentMetadata, false, reason, {
+          success: false,
+          reEncryptedCount: rotationResult.reEncryptedCount,
+          affectedFile: environmentFile,
+        });
       }
 
       // Record failure audit event
@@ -258,30 +272,38 @@ export class KeyRotationService {
         'rotated',
         'critical',
         'rotateKeyWithAudit',
-        `Key rotation failed: ${errorAsError.message}`,
+        `Key rotation failed for environment ${environmentFile}: ${errorAsError.message}`,
         {
           reason,
           error: errorAsError.message,
           reEncryptedCount: rotationResult.reEncryptedCount,
-          affectedFilesCount: rotationResult.affectedFiles.length,
+          environmentFile,
           durationMs: new Date().getTime() - startTime.getTime(),
+          processedVariables: processedVariableNames, // Include in failure audit too
         },
       );
 
-      // Update audit trail with failure
+      // Update audit trail with failure - include processed variables even on failure
       await this.keyRotationManager.updateAuditTrail(
         keyName,
         keyFilePath,
         reason,
         startTime,
         newKeyValue,
-        rotationResult,
+        {
+          success: false,
+          reEncryptedCount: rotationResult.reEncryptedCount,
+          affectedFile: environmentFile,
+        },
         shouldRotateKey,
         false,
         errorAsError,
+        processedVariableNames, // Pass the actual variable names even on failure
       );
 
-      logger.error(`Key rotation failed for "${keyName}": ${errorAsError.message}`);
+      logger.error(
+        `Key rotation failed for "${keyName}" in environment ${environmentFile}: ${errorAsError.message}`,
+      );
       throw error;
     } finally {
       // Step 15: Cleanup and final logging
@@ -294,10 +316,9 @@ export class KeyRotationService {
         const durationMs = endTime.getTime() - startTime.getTime();
 
         logger.info(
-          `Key rotation process completed for "${keyName}" in ${durationMs}ms. ` +
+          `Key rotation process completed for "${keyName}" in environment ${environmentFile} in ${durationMs}ms. ` +
             `Success: ${rotationResult.success}, ` +
-            `Re-encrypted: ${rotationResult.reEncryptedCount} variables, ` +
-            `Affected files: ${rotationResult.affectedFiles.length}`,
+            `Re-encrypted: ${rotationResult.reEncryptedCount} variables (${processedVariableNames.join(', ')})`,
         );
 
         // Optionally trigger system-wide health check if this was a critical rotation
@@ -320,137 +341,88 @@ export class KeyRotationService {
     }
   }
 
-  /**
-   * Utility method to rotate a key for a single environment file
-   */
-  public async rotateKeyForSingleEnvironment(
-    keyFilePath: string,
+  private async decryptSingleEnvironmentFile(
     keyName: string,
-    newKeyValue: string,
-    environmentFilePath: string,
-    reason: RotationEvent['reason'] = 'manual',
-    customMaxAge?: number,
+    environmentFile: string,
     shouldRotateKey: boolean = false,
-  ): Promise<SingleRotationResult> {
+  ): Promise<Record<string, string>> {
     try {
-      logger.info(`Rotating key for single environment: ${environmentFilePath}`);
-
-      const result = await this.rotateKeyWithAudit(
-        keyFilePath,
-        keyName,
-        newKeyValue,
-        [environmentFilePath],
-        reason,
-        customMaxAge,
-        shouldRotateKey,
+      logger.info(
+        `Starting decryption for key: ${keyName} in file: ${environmentFile}, shouldRotateKey: ${shouldRotateKey}`,
       );
-
-      return {
-        success: result.success,
-        reEncryptedCount: result.reEncryptedCount,
-        affectedFile: result.affectedFiles[0] || environmentFilePath,
-      };
-    } catch (error) {
-      ErrorHandler.captureError(
-        error,
-        'rotateKeyForSingleEnvironment',
-        `Failed to rotate key "${keyName}" for environment: ${environmentFilePath}`,
-      );
-      return { success: false, reEncryptedCount: 0, affectedFile: environmentFilePath };
-    }
-  }
-
-  /**
-   * Decrypt environment variables with selective processing
-   */
-  private async decryptEnvironmentEncryptedKeys(
-    keyName: string,
-    environmentFiles: string[],
-    shouldRotateKey: boolean = false,
-  ): Promise<Map<string, Record<string, string>>> {
-    this.decryptedDataCache.clear();
-
-    try {
-      logger.info(`Starting decryption for key: ${keyName}, shouldRotateKey: ${shouldRotateKey}`);
 
       const baseEnvFile = EnvironmentConstants.BASE_ENV_FILE;
-      const resolvedBaseEnvFile =
-        this.environmentSecretFileManager.resolveEnvironmentFilePath(baseEnvFile);
 
-      // Get the actual key value from the base env file
       const keyValue = await this.environmentSecretFileManager.getKeyValue(baseEnvFile, keyName);
       if (!keyValue) {
-        throw new Error(`Key '${keyName}' not found in ${resolvedBaseEnvFile}`);
+        throw new Error(`Key '${keyName}' not found in ${baseEnvFile}`);
       }
 
-      for (const envFilePath of environmentFiles) {
-        const envFileLines = await this.environmentFileParser.readEnvironmentFileAsLines(
-          this.DIRECTORY,
-          envFilePath,
-        );
+      const envFileLines = await this.environmentFileParser.readEnvironmentFileAsLines(
+        this.DIRECTORY,
+        environmentFile,
+      );
+      const allEnvVariables = this.environmentFileParser.extractEnvironmentVariables(envFileLines);
+      const decryptedVariables: Record<string, string | undefined> = {};
 
-        const allEnvVariables =
-          this.environmentFileParser.extractEnvironmentVariables(envFileLines);
-        const decryptedVariables: Record<string, string> = {};
+      for (const [key, value] of Object.entries(allEnvVariables)) {
+        const isEncrypted = this.isEncryptedValue(value);
+        const shouldProcess = isEncrypted || (shouldRotateKey && value);
 
-        // Process each variable in the file
-        for (const [key, value] of Object.entries(allEnvVariables)) {
-          const isEncrypted = this.isEncryptedValue(value);
-          const shouldProcess = isEncrypted || (shouldRotateKey && value);
+        if (!shouldProcess) continue;
 
-          if (shouldProcess) {
-            try {
-              if (isEncrypted) {
-                const decryptedValue = await CryptoService.decrypt(value, keyName);
-                decryptedVariables[key] = decryptedValue;
-              } else if (shouldRotateKey && value) {
-                decryptedVariables[key] = value;
-              }
-            } catch (decryptError) {
-              ErrorHandler.captureError(
-                decryptError,
-                'decryptEnvironmentEncryptedKeys',
-                `Failed to decrypt variable '${key}' in file '${envFilePath}': ${decryptError}`,
-              );
-              logger.warn(`Skipping variable ${key} due to decryption error`);
-            }
+        try {
+          if (isEncrypted) {
+            const decryptedValue = await CryptoService.decrypt(value, keyName);
+            decryptedVariables[key] = decryptedValue;
+          } else if (shouldRotateKey) {
+            decryptedVariables[key] = value;
           }
-        }
-
-        if (Object.keys(decryptedVariables).length > 0) {
-          this.decryptedDataCache.set(envFilePath, decryptedVariables);
+        } catch (decryptError) {
+          ErrorHandler.captureError(
+            decryptError,
+            'decryptSingleEnvironmentFile',
+            `Failed to decrypt variable '${key}' in file '${environmentFile}'`,
+          );
+          logger.warn(`Skipping variable '${key}' due to decryption error.`);
         }
       }
 
-      if (this.decryptedDataCache.size === 0) {
+      const filteredVariables = Object.fromEntries(
+        Object.entries(decryptedVariables).filter((entry): entry is [string, string] => {
+          const [_, value] = entry;
+          return typeof value === 'string' && value.trim() !== '';
+        }),
+      );
+
+      if (Object.keys(filteredVariables).length === 0) {
         logger.warn(
-          `No data was decrypted for key ${keyName}. This might indicate no encrypted variables found or decryption failures.`,
+          `No decrypted values found for key '${keyName}' in file '${environmentFile}'. Possibly no encrypted variables or all failed decryption.`,
         );
       }
 
-      return new Map(this.decryptedDataCache);
+      return filteredVariables;
     } catch (error) {
       ErrorHandler.captureError(
         error,
-        'decryptEnvironmentEncryptedKeys',
-        'Failed to decrypt environment encrypted keys',
+        'decryptSingleEnvironmentFile',
+        'Failed to decrypt environment file',
       );
       throw error;
     }
   }
 
-  /**
-   * Re-encrypt environment variables with new key
-   */
-  private async reEncryptEnvironmentVariables(
-    decryptedDataMap: Map<string, Record<string, string>>,
+  // New helper method to re-encrypt a single environment file
+  private async reEncryptSingleEnvironmentFile(
+    environmentFile: string,
+    decryptedVariables: Record<string, string>,
     keyName: string,
   ): Promise<number> {
     let totalReEncrypted = 0;
 
     try {
-      if (decryptedDataMap.size === 0) {
-        logger.warn('No decrypted data found in map - nothing to re-encrypt');
+      if (Object.keys(decryptedVariables).length === 0) {
+        logger.warn(`No decrypted data found for file ${environmentFile} - nothing to re-encrypt`);
         return 0;
       }
 
@@ -461,61 +433,56 @@ export class KeyRotationService {
         throw new Error(`Key '${keyName}' not found in ${baseEnvFile} for re-encryption`);
       }
 
-      // Process each environment file
-      for (const [envFilePath, decryptedVariables] of decryptedDataMap.entries()) {
-        let envFileLines = await this.environmentFileParser.readEnvironmentFileAsLines(
-          this.DIRECTORY,
-          envFilePath,
-        );
+      let envFileLines = await this.environmentFileParser.readEnvironmentFileAsLines(
+        this.DIRECTORY,
+        environmentFile,
+      );
 
-        let fileModified = false;
+      let fileModified = false;
 
-        // Re-encrypt each variable and update the file lines
-        for (const [key, decryptedValue] of Object.entries(decryptedVariables)) {
-          try {
-            const newEncryptedValue = await CryptoService.encrypt(decryptedValue, keyName);
+      // Re-encrypt each variable and update the file lines
+      for (const [key, decryptedValue] of Object.entries(decryptedVariables)) {
+        try {
+          const newEncryptedValue = await CryptoService.encrypt(decryptedValue, keyName);
 
-            envFileLines = this.environmentFileParser.updateEnvironmentFileLines(
-              envFileLines,
-              key,
-              newEncryptedValue,
-            );
-
-            fileModified = true;
-            totalReEncrypted++;
-          } catch (encryptError) {
-            ErrorHandler.captureError(
-              encryptError,
-              'reEncryptEnvironmentVariables',
-              `Failed to re-encrypt variable '${key}' in file '${envFilePath}': ${encryptError}`,
-            );
-            throw encryptError;
-          }
-        }
-
-        // Write the updated file back only if it was modified
-        if (fileModified) {
-          const resolvedEnvFilePath =
-            this.environmentSecretFileManager.resolveEnvironmentFilePath(envFilePath);
-          await this.environmentFileParser.writeEnvironmentFileLines(
-            resolvedEnvFilePath,
+          envFileLines = this.environmentFileParser.updateEnvironmentFileLines(
             envFileLines,
+            key,
+            newEncryptedValue,
           );
-          logger.info(
-            `Updated ${Object.keys(decryptedVariables).length} variables in ${resolvedEnvFilePath}`,
+
+          fileModified = true;
+          totalReEncrypted++;
+        } catch (encryptError) {
+          ErrorHandler.captureError(
+            encryptError,
+            'reEncryptSingleEnvironmentFile',
+            `Failed to re-encrypt variable '${key}' in file '${environmentFile}': ${encryptError}`,
           );
+          throw encryptError;
         }
       }
 
-      logger.info(
-        `Successfully re-encrypted ${totalReEncrypted} variables across ${decryptedDataMap.size} files`,
-      );
+      // Write the updated file back only if it was modified
+      if (fileModified) {
+        const resolvedEnvFilePath =
+          this.environmentSecretFileManager.resolveEnvironmentFilePath(environmentFile);
+        await this.environmentFileParser.writeEnvironmentFileLines(
+          resolvedEnvFilePath,
+          envFileLines,
+        );
+        logger.info(
+          `Updated ${Object.keys(decryptedVariables).length} variables in ${resolvedEnvFilePath}`,
+        );
+      }
+
+      logger.info(`Successfully re-encrypted ${totalReEncrypted} variables in ${environmentFile}`);
       return totalReEncrypted;
     } catch (error) {
       ErrorHandler.captureError(
         error,
-        'reEncryptEnvironmentVariables',
-        'Failed to re-encrypt environment variables',
+        'reEncryptSingleEnvironmentFile',
+        'Failed to re-encrypt single environment file',
       );
       throw error;
     }

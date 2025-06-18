@@ -50,7 +50,7 @@ All sensitive data is encrypted using **AES-GCM** and secured with **Argon2** ha
 Run this first to create a secure encryption key:
 
 ```bash
-npx cross-env PLAYWRIGHT_GREP=@generate-key npm run test:encryption:dev
+npx cross-env PLAYWRIGHT_GREP=@key-gen npm run test:encryption:dev
 ```
 
 #### 2. Encrypt Credentials

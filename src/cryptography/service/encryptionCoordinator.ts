@@ -122,34 +122,34 @@ export class EncryptionCoordinator {
   /**
    * Rotates a key and re-encrypts data with selective override capability
    */
-  public async rotateKeyAndReEncryptData(
-    keyFilePath: string, // Path to the file containing the key
-    keyName: string,
-    newKeyValue: string,
-    environmentVariables: string[], // Array of env variables to be encrypted on rotation
-    reason: 'scheduled' | 'manual' | 'expired' | 'security_breach',
-    customMaxAge?: number,
-    shouldRotateKey: boolean = false, // Controls whether to override existing encrypted data
-  ) {
-    try {
-      return await this.keyRotationService.rotateKeyWithAudit(
-        keyFilePath,
-        keyName,
-        newKeyValue,
-        environmentVariables,
-        reason,
-        customMaxAge,
-        shouldRotateKey,
-      );
-    } catch (error) {
-      ErrorHandler.captureError(
-        error,
-        'rotateKeyAndReEncryptData',
-        `Failed to rotate key "${keyName}" and re-encrypt data`,
-      );
-      throw error;
-    }
-  }
+  // public async rotateKeyAndReEncryptData(
+  //   keyFilePath: string, // Path to the file containing the key
+  //   keyName: string,
+  //   newKeyValue: string,
+  //   environmentVariables: string[], // Array of env variables to be encrypted on rotation
+  //   reason: 'scheduled' | 'manual' | 'expired' | 'security_breach',
+  //   customMaxAge?: number,
+  //   shouldRotateKey: boolean = false, // Controls whether to override existing encrypted data
+  // ) {
+  //   try {
+  //     return await this.keyRotationService.rotateKeyWithAudit(
+  //       keyFilePath,
+  //       keyName,
+  //       newKeyValue,
+  //       environmentVariables,
+  //       reason,
+  //       customMaxAge,
+  //       shouldRotateKey,
+  //     );
+  //   } catch (error) {
+  //     ErrorHandler.captureError(
+  //       error,
+  //       'rotateKeyAndReEncryptData',
+  //       `Failed to rotate key "${keyName}" and re-encrypt data`,
+  //     );
+  //     throw error;
+  //   }
+  // }
 
   /**
    * Rotates a key for a single environment file with selective override capability

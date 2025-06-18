@@ -1,6 +1,6 @@
 import { test as cryptoBaseTest } from '@playwright/test';
 
-import { KeyRotationManager } from '../src/utils/environment/keyRotationManager';
+import { KeyRotationManager } from '../src/cryptography/manager/keyRotationManager';
 import { KeyMetadataRepository } from '../src/cryptography/key/keyMetadataRepository';
 import { EnvironmentSecretFileManager } from '../src/cryptography/manager/environmentSecretFileManager';
 import { KeyRotationService } from '../src/cryptography/service/keyRotationService';
@@ -8,6 +8,7 @@ import { CryptoService } from '../src/cryptography/service/cryptoService';
 import { EncryptionManager } from '../src/cryptography/manager/encryptionManager';
 import { EnvironmentFileParser } from '../src/cryptography/manager/environmentFileParser';
 import { EncryptionCoordinator } from '../src/cryptography/service/encryptionCoordinator';
+import { CryptoOrchestrator } from '../src/cryptography/service/cryptoOrchestrator';
 
 type customFixtures = {
   keyRotationManager: KeyRotationManager;
@@ -18,6 +19,7 @@ type customFixtures = {
   encryptionManager: EncryptionManager;
   environmentFileParser: EnvironmentFileParser;
   encryptionCoordinator: EncryptionCoordinator;
+  cryptoOrchestrator: CryptoOrchestrator;
 };
 
 export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
@@ -42,8 +44,8 @@ export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
       ),
     );
   },
-  keyMetadataRepository: async ({ environmentSecretFileManager }, use) => {
-    await use(new KeyMetadataRepository(environmentSecretFileManager));
+  keyMetadataRepository: async ({}, use) => {
+    await use(new KeyMetadataRepository());
   },
   environmentSecretFileManager: async ({}, use) => {
     await use(new EnvironmentSecretFileManager());
@@ -62,6 +64,12 @@ export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
     use,
   ) => {
     await use(new EncryptionCoordinator(keyRotationManager, encryptionManager, keyRotationService));
+  },
+  cryptoOrchestrator: async (
+    { keyRotationManager, encryptionManager, keyRotationService },
+    use,
+  ) => {
+    await use(new CryptoOrchestrator(keyRotationManager, encryptionManager, keyRotationService));
   },
 });
 
