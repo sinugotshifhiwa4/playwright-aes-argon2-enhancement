@@ -1,0 +1,44 @@
+{
+  "DEV_SECRET_KEY": {
+    "keyName": "DEV_SECRET_KEY",
+    "createdAt": "2025-06-19T20:44:55.289Z",
+    "lastRotatedAt": "2025-06-19T20:45:26.630Z",
+    "rotationCount": 1,
+    "rotationConfig": {
+      "maxAgeInDays": 30,
+      "warningThresholdInDays": 7
+    },
+    "auditTrail": {
+      "auditEvents": [
+        {
+          "timestamp": "2025-06-19T20:44:55.300Z",
+          "eventType": "rotated",
+          "severity": "info",
+          "source": "storeBaseEnvironmentKey",
+          "details": "Secret key rotated with 90-day rotation period",
+          "metadata": {
+            "initialMaxAge": 90,
+            "environmentsUsedIn": [],
+            "dependentVariables": []
+          }
+        }
+      ],
+      "rotationHistory": [],
+      "healthCheckHistory": []
+    },
+    "usageTracking": {
+      "environmentsUsedIn": [
+        ".env.dev"
+      ],
+      "dependentVariables": [
+        "PORTAL_USERNAME",
+        "PORTAL_PASSWORD"
+      ],
+      "lastAccessedAt": "2025-06-19T20:45:26.630Z"
+    },
+    "statusTracking": {
+      "currentStatus": "healthy",
+      "lastStatusChange": "2025-06-19T20:45:26.630Z"
+    }
+  }
+}

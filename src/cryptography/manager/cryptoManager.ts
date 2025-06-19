@@ -1,5 +1,6 @@
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
+import SecureKeyGenerator from '../key/secureKeyGenerator';
 import { EnvironmentSecretFileManager } from './environmentSecretFileManager';
 import { SECURITY_CONFIG } from '../constants/security.constant';
 import { COMMON_WEAK_KEYS } from '../key/commonWeakKeys';
@@ -273,5 +274,188 @@ export class CryptoManager {
       ErrorHandler.captureError(error, 'isValidBase64', 'Failed to validate base64 string');
       return false;
     }
+  }
+
+  // Encrypt
+
+  /**
+   * Helper to validate encryption prerequisites
+   */
+  public static async validateEncryptionPrerequisites(
+    value: string,
+    secretKeyVariable: string,
+  ): Promise<string> {
+    const actualSecretKey = await CryptoManager.getSecretKeyFromEnvironment(secretKeyVariable);
+    CryptoManager.validateSecretKey(actualSecretKey);
+    CryptoManager.validateInputs(value, actualSecretKey, 'encrypt');
+    return actualSecretKey;
+  }
+
+  /**
+   * Helper to generate encryption components (salt, IV, and derived keys)
+   */
+  public static async generateEncryptionComponents(secretKey: string): Promise<{
+    salt: string;
+    webCryptoIv: Uint8Array;
+    encryptionKey: CryptoKey;
+    hmacKey: CryptoKey;
+  }> {
+    const salt = SecureKeyGenerator.generateBase64Salt();
+    const webCryptoIv = SecureKeyGenerator.generateWebCryptoIV();
+
+    const { encryptionKey, hmacKey } = await CryptoManager.deriveKeysWithArgon2(secretKey, salt);
+
+    return {
+      salt,
+      webCryptoIv,
+      encryptionKey,
+      hmacKey,
+    };
+  }
+
+  /**
+   * Helper to create the encrypted payload with HMAC
+   */
+  public static async createEncryptedPayload(
+    value: string,
+    salt: string,
+    webCryptoIv: Uint8Array,
+    encryptionKey: CryptoKey,
+    hmacKey: CryptoKey,
+  ): Promise<string> {
+    // Encrypt the value
+    const encryptedBuffer = await CryptoManager.encryptBuffer(webCryptoIv, encryptionKey, value);
+    const cipherText = Buffer.from(encryptedBuffer).toString(FileEncoding.BASE64);
+    const iv = Buffer.from(webCryptoIv).toString(FileEncoding.BASE64);
+
+    // Compute HMAC (salt + iv + cipherText)
+    const dataToHmac = Buffer.concat([
+      Buffer.from(salt, FileEncoding.BASE64),
+      Buffer.from(iv, FileEncoding.BASE64),
+      Buffer.from(cipherText, FileEncoding.BASE64),
+    ]);
+    const hmacBase64 = await CryptoManager.computeHMAC(hmacKey, dataToHmac);
+
+    // Format: ENC2:salt:iv:cipherText:hmac
+    return `${SECURITY_CONSTANTS.FORMAT.PREFIX}${salt}:${iv}:${cipherText}:${hmacBase64}`;
+  }
+
+  // Decrypt
+
+  // Helper method 1: Parse and validate encrypted data format
+  public static parseEncryptedData(encryptedData: string): {
+    salt: string;
+    iv: string;
+    cipherText: string;
+    receivedHmac: string;
+  } {
+    CryptoManager.validateEncryptedFormat(encryptedData);
+
+    const encryptedPart = encryptedData.substring(SECURITY_CONSTANTS.FORMAT.PREFIX.length);
+    const parts = encryptedPart.split(SECURITY_CONSTANTS.FORMAT.SEPARATOR);
+
+    CryptoManager.validatePartCount(parts);
+
+    const [salt, iv, cipherText, receivedHmac] = parts;
+
+    CryptoManager.validateRequiredParts(salt, iv, cipherText, receivedHmac);
+    CryptoManager.validateBase64Components(salt, iv, cipherText, receivedHmac);
+
+    return { salt, iv, cipherText, receivedHmac };
+  }
+
+  // Helper method 2: Validate encrypted data format
+  private static validateEncryptedFormat(encryptedData: string): void {
+    if (!encryptedData.startsWith(SECURITY_CONSTANTS.FORMAT.PREFIX)) {
+      ErrorHandler.logAndThrow('Invalid encrypted format: Missing prefix');
+    }
+  }
+
+  // Validate part count
+  public static validatePartCount(parts: string[]): void {
+    if (parts.length !== SECURITY_CONSTANTS.FORMAT.EXPECTED_PARTS) {
+      ErrorHandler.logAndThrow(
+        `Invalid format. Expected ${SECURITY_CONSTANTS.FORMAT.EXPECTED_PARTS} parts, got ${parts.length}`,
+      );
+    }
+  }
+
+  // Validate required parts are present
+  public static validateRequiredParts(
+    salt: string,
+    iv: string,
+    cipherText: string,
+    receivedHmac: string,
+  ): void {
+    const missingParts = [];
+    if (!salt) missingParts.push('salt');
+    if (!iv) missingParts.push('iv');
+    if (!cipherText) missingParts.push('cipherText');
+    if (!receivedHmac) missingParts.push('hmac');
+
+    if (missingParts.length > 0) {
+      ErrorHandler.logAndThrow(
+        `Authentication failed: Missing components - ${missingParts.join(', ')}`,
+      );
+    }
+  }
+
+  // Validate base64 encoding of components
+  public static validateBase64Components(
+    salt: string,
+    iv: string,
+    cipherText: string,
+    receivedHmac: string,
+  ): void {
+    if (!CryptoManager.isValidBase64(salt)) {
+      ErrorHandler.logAndThrow('Invalid salt format');
+    }
+    if (!CryptoManager.isValidBase64(iv)) {
+      ErrorHandler.logAndThrow('Invalid IV format');
+    }
+    if (!CryptoManager.isValidBase64(cipherText)) {
+      ErrorHandler.logAndThrow('Invalid cipherText format');
+    }
+    if (!CryptoManager.isValidBase64(receivedHmac)) {
+      ErrorHandler.logAndThrow('Invalid HMAC format');
+    }
+  }
+
+  // Verify HMAC integrity
+  public static async verifyHMAC(
+    salt: string,
+    iv: string,
+    cipherText: string,
+    receivedHmac: string,
+    hmacKey: CryptoKey,
+  ): Promise<void> {
+    const dataToHmac = CryptoManager.prepareHMACData(salt, iv, cipherText);
+    const computedHmac = await CryptoManager.computeHMAC(hmacKey, dataToHmac);
+
+    if (!CryptoManager.constantTimeCompare(computedHmac, receivedHmac)) {
+      ErrorHandler.logAndThrow(
+        'Authentication failed: HMAC mismatch - Invalid key or tampered data',
+      );
+    }
+  }
+
+  // Prepare data for HMAC computation
+  public static prepareHMACData(salt: string, iv: string, cipherText: string): Buffer {
+    return Buffer.concat([
+      Buffer.from(salt, FileEncoding.BASE64),
+      Buffer.from(iv, FileEncoding.BASE64),
+      Buffer.from(cipherText, FileEncoding.BASE64),
+    ]);
+  }
+
+  public static async performDecryption(
+    iv: string,
+    encryptionKey: CryptoKey,
+    cipherText: string,
+  ): Promise<ArrayBuffer> {
+    const ivBuffer = Buffer.from(iv, FileEncoding.BASE64);
+    const cipherBuffer = Buffer.from(cipherText, FileEncoding.BASE64);
+
+    return await CryptoManager.decryptBuffer(ivBuffer, encryptionKey, cipherBuffer);
   }
 }
