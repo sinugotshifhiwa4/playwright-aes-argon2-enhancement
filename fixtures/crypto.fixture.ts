@@ -1,52 +1,25 @@
 import { test as cryptoBaseTest } from '@playwright/test';
-
-import { KeyRotationManager } from '../src/cryptography/manager/keyRotationManager';
 import { KeyMetadataRepository } from '../src/cryptography/key/keyMetadataRepository';
 import { EnvironmentSecretFileManager } from '../src/cryptography/manager/environmentSecretFileManager';
-import { KeyRotationService } from '../src/cryptography/service/keyRotationService';
+import { KeyLifecycleManager } from '../src/cryptography/manager/keyLifecycleManager';
+import { KeyLifecycleService } from '../src/cryptography/service/keyLifecycleService';
 import { CryptoService } from '../src/cryptography/service/cryptoService';
 import { EncryptionManager } from '../src/cryptography/manager/encryptionManager';
 import { EnvironmentFileParser } from '../src/cryptography/manager/environmentFileParser';
-import { EncryptionCoordinator } from '../src/cryptography/service/encryptionCoordinator';
 import { CryptoOrchestrator } from '../src/cryptography/service/cryptoOrchestrator';
 
 type customFixtures = {
-  keyRotationManager: KeyRotationManager;
-  keyRotationService: KeyRotationService;
-  keyMetadataRepository: KeyMetadataRepository;
   environmentSecretFileManager: EnvironmentSecretFileManager;
   cryptoService: CryptoService;
   encryptionManager: EncryptionManager;
   environmentFileParser: EnvironmentFileParser;
-  encryptionCoordinator: EncryptionCoordinator;
+  keyLifecycleManager: KeyLifecycleManager;
+  keyLifecycleService: KeyLifecycleService;
+  keyMetadataRepository: KeyMetadataRepository;
   cryptoOrchestrator: CryptoOrchestrator;
 };
 
 export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
-  keyRotationManager: async ({ environmentSecretFileManager, keyMetadataRepository }, use) => {
-    await use(new KeyRotationManager(environmentSecretFileManager, keyMetadataRepository));
-  },
-  keyRotationService: async (
-    {
-      environmentSecretFileManager,
-      keyMetadataRepository,
-      environmentFileParser,
-      keyRotationManager,
-    },
-    use,
-  ) => {
-    await use(
-      new KeyRotationService(
-        environmentSecretFileManager,
-        keyMetadataRepository,
-        environmentFileParser,
-        keyRotationManager,
-      ),
-    );
-  },
-  keyMetadataRepository: async ({}, use) => {
-    await use(new KeyMetadataRepository());
-  },
   environmentSecretFileManager: async ({}, use) => {
     await use(new EnvironmentSecretFileManager());
   },
@@ -59,17 +32,35 @@ export const cryptoFixtures = cryptoBaseTest.extend<customFixtures>({
   environmentFileParser: async ({}, use) => {
     await use(new EnvironmentFileParser());
   },
-  encryptionCoordinator: async (
-    { keyRotationManager, encryptionManager, keyRotationService },
+  keyLifecycleManager: async ({ environmentSecretFileManager, keyMetadataRepository }, use) => {
+    await use(new KeyLifecycleManager(environmentSecretFileManager, keyMetadataRepository));
+  },
+  keyLifecycleService: async (
+    {
+      environmentSecretFileManager,
+      keyMetadataRepository,
+      environmentFileParser,
+      keyLifecycleManager,
+    },
     use,
   ) => {
-    await use(new EncryptionCoordinator(keyRotationManager, encryptionManager, keyRotationService));
+    await use(
+      new KeyLifecycleService(
+        environmentSecretFileManager,
+        keyMetadataRepository,
+        environmentFileParser,
+        keyLifecycleManager,
+      ),
+    );
+  },
+  keyMetadataRepository: async ({}, use) => {
+    await use(new KeyMetadataRepository());
   },
   cryptoOrchestrator: async (
-    { keyRotationManager, encryptionManager, keyRotationService },
+    { keyLifecycleManager, encryptionManager, keyLifecycleService },
     use,
   ) => {
-    await use(new CryptoOrchestrator(keyRotationManager, encryptionManager, keyRotationService));
+    await use(new CryptoOrchestrator(keyLifecycleManager, encryptionManager, keyLifecycleService));
   },
 });
 

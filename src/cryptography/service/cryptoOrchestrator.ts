@@ -1,30 +1,31 @@
 import { EncryptionManager } from '../manager/encryptionManager';
-import { KeyRotationManager } from '../manager/keyRotationManager';
-import { KeyRotationService } from './keyRotationService';
+import { KeyLifecycleManager } from './../manager/keyLifecycleManager';
+import { KeyLifecycleService } from './keyLifecycleService';
 import {
   ComprehensiveKeyInfo,
   AuditSummary,
   StartupSecurityCheckResult,
   KeyRotationStatus,
   SystemAuditResult,
-} from '../types/keyMetadata.types';
+  SystemHealth,
+} from '../types/keyManagement.types';
 import { KeyRotationConfigDefaults } from '../constants/keyRotationConfig.constants';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';
 
 export class CryptoOrchestrator {
   private encryptionManager: EncryptionManager;
-  private keyRotationManager: KeyRotationManager;
-  private keyRotationService: KeyRotationService;
+  private keyLifecycleManager: KeyLifecycleManager;
+  private keyLifecycleService: KeyLifecycleService;
 
   constructor(
-    keyRotationManager: KeyRotationManager,
+    keyLifecycleManager: KeyLifecycleManager,
     encryptionManager: EncryptionManager,
-    keyRotationService: KeyRotationService,
+    keyLifecycleService: KeyLifecycleService,
   ) {
-    this.keyRotationManager = keyRotationManager;
+    this.keyLifecycleManager = keyLifecycleManager;
     this.encryptionManager = encryptionManager;
-    this.keyRotationService = keyRotationService;
+    this.keyLifecycleService = keyLifecycleService;
   }
 
   /**
@@ -53,7 +54,7 @@ export class CryptoOrchestrator {
         environmentBaseFilePath,
       );
 
-      await this.keyRotationManager.storeBaseEnvironmentKey(
+      await this.keyLifecycleManager.storeBaseEnvironmentKey(
         resolvedPath,
         keyName,
         secretKey,
@@ -109,7 +110,7 @@ export class CryptoOrchestrator {
     shouldRotateKey: boolean = false,
   ): Promise<void> {
     try {
-      await this.keyRotationService.rotateKeyWithAudit(
+      await this.keyLifecycleService.rotateKeyWithAudit(
         keyFilePath,
         keyName,
         newKeyValue,
@@ -138,24 +139,26 @@ export class CryptoOrchestrator {
   ): Promise<ComprehensiveKeyInfo> {
     try {
       if (includeAudit) {
-        // Use the actual method from KeyRotationManager
-        const comprehensiveInfo = await this.keyRotationManager.getComprehensiveKeyInfo(keyName);
+        const comprehensiveInfo = await this.keyLifecycleManager.getComprehensiveKeyInfo(keyName);
 
-        // Transform the response to match our interface
+        // Determine if this single key is expired
+        const isExpired = comprehensiveInfo.rotationStatus?.needsRotation || false;
+
         const auditSummary: AuditSummary = {
           totalKeys: 1, // Single key info
           healthyKeys: comprehensiveInfo.rotationStatus?.needsRotation ? 0 : 1,
           warningKeys: comprehensiveInfo.rotationStatus?.needsWarning ? 1 : 0,
           criticalKeys: comprehensiveInfo.rotationStatus?.needsRotation ? 1 : 0,
+          expiredKeys: isExpired ? 1 : 0,
           averageKeyAge: comprehensiveInfo.rotationStatus?.ageInDays || 0,
           oldestKeyAge: comprehensiveInfo.rotationStatus?.ageInDays || 0,
           newestKeyAge: comprehensiveInfo.rotationStatus?.ageInDays || 0,
           totalAuditEvents: comprehensiveInfo.auditSummary?.totalAuditEvents || 0,
+          totalRotations: comprehensiveInfo.auditSummary?.totalRotations || 0,
           lastRotation: comprehensiveInfo.auditSummary?.lastRotation,
           lastHealthCheck: comprehensiveInfo.auditSummary?.lastHealthCheck,
           lastAccess: comprehensiveInfo.auditSummary?.lastAccess,
-          currentStatus: comprehensiveInfo.auditSummary?.currentStatus || 'unknown',
-          totalRotations: comprehensiveInfo.auditSummary?.totalRotations || 0,
+          currentStatus: comprehensiveInfo.auditSummary?.currentStatus as SystemHealth,
         };
 
         return {
@@ -165,14 +168,13 @@ export class CryptoOrchestrator {
           auditSummary,
         };
       } else {
-        // Basic key info without full audit trail for performance
-        const keyInfo = await this.keyRotationManager.getKeyInfo(keyName);
+        const keyInfo = await this.keyLifecycleManager.getKeyInfo(keyName);
 
         return {
           exists: keyInfo.exists,
           metadata: keyInfo.metadata,
           rotationStatus: keyInfo.rotationStatus,
-          // auditSummary is optional in ComprehensiveKeyInfo interface, so we can omit it
+          // auditSummary intentionally omitted when includeAudit is false
         };
       }
     } catch (error) {
@@ -190,23 +192,23 @@ export class CryptoOrchestrator {
    */
   public async performSystemAudit(): Promise<SystemAuditResult> {
     try {
-      const auditResult = await this.keyRotationManager.performComprehensiveAudit();
+      const auditResult = await this.keyLifecycleManager.performComprehensiveAudit();
 
-      // Transform the audit result to match our interface
       const auditSummary: AuditSummary = {
         totalKeys: auditResult.auditSummary.totalKeys,
         healthyKeys: auditResult.auditSummary.healthyKeys,
         warningKeys: auditResult.auditSummary.warningKeys,
         criticalKeys: auditResult.auditSummary.criticalKeys,
+        expiredKeys: auditResult.auditSummary.expiredKeys,
         averageKeyAge: auditResult.auditSummary.averageKeyAge,
         oldestKeyAge: auditResult.auditSummary.oldestKeyAge,
         newestKeyAge: auditResult.auditSummary.newestKeyAge,
-        totalAuditEvents: 0, // Not provided by KeyRotationManager
-        lastRotation: undefined, // Not provided by KeyRotationManager
-        lastHealthCheck: undefined, // Not provided by KeyRotationManager
-        lastAccess: undefined, // Not provided by KeyRotationManager
+        totalAuditEvents: auditResult.auditSummary.totalAuditEvents,
+        totalRotations: auditResult.auditSummary.totalRotations,
+        lastRotation: auditResult.auditSummary.lastRotation,
+        lastHealthCheck: auditResult.auditSummary.lastHealthCheck,
+        lastAccess: auditResult.auditSummary.lastAccess,
         currentStatus: auditResult.systemHealth,
-        totalRotations: 0, // Not provided by KeyRotationManager
       };
 
       return {
@@ -214,44 +216,11 @@ export class CryptoOrchestrator {
         keysNeedingRotation: auditResult.keysNeedingRotation,
         keysNeedingWarning: auditResult.keysNeedingWarning,
         auditSummary,
+        expiredKeys: auditResult.expiredKeys,
         recommendations: auditResult.recommendations,
       };
     } catch (error) {
       ErrorHandler.captureError(error, 'performSystemAudit', 'Failed to perform system audit');
-      throw error;
-    }
-  }
-
-  /**
-   * Records key access for audit trail - tracks when and how keys are accessed
-   * This is crucial for security monitoring and compliance
-   */
-  public async recordKeyAccess(
-    keyName: string,
-    accessSource: string = 'CryptoOrchestrator',
-    additionalMetadata?: Record<string, unknown>,
-  ): Promise<void> {
-    try {
-      // KeyRotationManager.recordKeyAccess only takes keyName and accessSource
-      await this.keyRotationManager.recordKeyAccess(keyName, accessSource);
-
-      // If we need to record additional metadata, we can use recordAuditEvent
-      if (additionalMetadata) {
-        await this.keyRotationManager.recordAuditEvent(
-          keyName,
-          'accessed',
-          'info',
-          accessSource,
-          `Key accessed with additional metadata`,
-          additionalMetadata,
-        );
-      }
-    } catch (error) {
-      ErrorHandler.captureError(
-        error,
-        'recordKeyAccess',
-        `Failed to record key access for "${keyName}"`,
-      );
       throw error;
     }
   }
@@ -286,6 +255,7 @@ export class CryptoOrchestrator {
         criticalKeys: auditResult.keysNeedingRotation,
         warningKeys: auditResult.keysNeedingWarning,
         auditSummary: auditResult.auditSummary,
+        expiredKeys: auditResult.expiredKeys,
         recommendations: auditResult.recommendations,
       };
     } catch (error) {
@@ -303,7 +273,7 @@ export class CryptoOrchestrator {
    */
   public async checkKeyRotationStatus(keyName: string): Promise<KeyRotationStatus> {
     try {
-      return await this.keyRotationManager.checkKeyRotationStatus(keyName, 'api');
+      return await this.keyLifecycleManager.checkKeyRotationStatus(keyName, 'api');
     } catch (error) {
       ErrorHandler.captureError(
         error,

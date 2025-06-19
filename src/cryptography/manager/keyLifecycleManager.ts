@@ -6,16 +6,23 @@ import {
   KeyRotationConfig,
   UsageTracking,
   AuditTrail,
+  AuditSummary,
   StatusTracking,
   HealthCheckEvent,
   RotationResult,
   RotationEvent,
   AuditEvent,
-} from '../types/keyMetadata.types';
+  KeyStatus,
+  EventType,
+  EventSeverity,
+  RotationReason,
+  CheckSource,
+  SystemHealth,
+} from '../types/keyManagement.types';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';
 
-export class KeyRotationManager {
+export class KeyLifecycleManager {
   public readonly keyRotationConfig: KeyRotationConfig;
   private environmentSecretFileManager: EnvironmentSecretFileManager;
   private metadataRepo: KeyMetadataRepository;
@@ -76,14 +83,14 @@ export class KeyRotationManager {
   public async updateAuditTrail(
     keyName: string,
     keyFilePath: string,
-    reason: RotationEvent['reason'],
+    reason: RotationReason,
     startTime: Date,
     newKeyValue: string,
     rotationResult: RotationResult,
     shouldRotateKey: boolean,
     success: boolean,
     error?: Error,
-    processedVariableNames?: string[], // This parameter now contains the actual variable names
+    processedVariableNames?: string[],
   ): Promise<void> {
     try {
       const metadata = await this.metadataRepo.readKeyMetadata();
@@ -114,15 +121,16 @@ export class KeyRotationManager {
       // Use the actual processed variable names passed from the rotation service
       const affectedVariables = processedVariableNames || [];
 
-      const affectedEnvironments = success ? [rotationResult.affectedFile] : [];
+      // Use the actual affected environments passed from the rotation service
+      const affectedEnvironments = success ? rotationResult.affectedFiles : [];
 
       const auditEntry: RotationEvent = {
         timestamp: startTime,
         reason,
         oldKeyHash,
         newKeyHash,
-        affectedEnvironment: affectedEnvironments,
-        affectedVariables, // Now contains actual variable names like ["PORTAL_USERNAME", "PORTAL_PASSWORD"]
+        affectedEnvironments,
+        affectedVariables,
         success,
         overrideMode: shouldRotateKey,
         ...(error && { errorDetails: error.message }),
@@ -130,12 +138,12 @@ export class KeyRotationManager {
 
       metadata[keyName].auditTrail.rotationHistory.push(auditEntry);
 
-      if (success && rotationResult.affectedFile) {
+      if (success && rotationResult.affectedFiles.length > 0) {
         // Update usage tracking with actual processed variables
-        if (
-          !metadata[keyName].usageTracking.environmentsUsedIn.includes(rotationResult.affectedFile)
-        ) {
-          metadata[keyName].usageTracking.environmentsUsedIn.push(rotationResult.affectedFile);
+        for (const envFile of rotationResult.affectedFiles) {
+          if (!metadata[keyName].usageTracking.environmentsUsedIn.includes(envFile)) {
+            metadata[keyName].usageTracking.environmentsUsedIn.push(envFile);
+          }
         }
 
         // Add processed variables to dependentVariables if not already present
@@ -151,18 +159,20 @@ export class KeyRotationManager {
         if (processedVariableNames && processedVariableNames.length > 0) {
           // Find the earliest entry (likely the first rotation) that has empty arrays
           const initialAuditEntry = metadata[keyName].auditTrail.rotationHistory
-            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+            .sort(
+              (a: RotationEvent, b: RotationEvent) => a.timestamp.getTime() - b.timestamp.getTime(),
+            )
             .find(
-              (entry) =>
-                Array.isArray(entry.affectedEnvironment) &&
+              (entry: RotationEvent) =>
+                Array.isArray(entry.affectedEnvironments) &&
                 Array.isArray(entry.affectedVariables) &&
-                entry.affectedEnvironment.length === 0 &&
+                entry.affectedEnvironments.length === 0 &&
                 entry.affectedVariables.length === 0,
             );
 
           if (initialAuditEntry) {
             // Update the initial entry with current usage information
-            initialAuditEntry.affectedEnvironment = [rotationResult.affectedFile];
+            initialAuditEntry.affectedEnvironments = [...rotationResult.affectedFiles];
             initialAuditEntry.affectedVariables = processedVariableNames;
 
             logger.info(`Updated initial audit entry for key ${keyName} with usage information`);
@@ -175,11 +185,11 @@ export class KeyRotationManager {
       if (success) {
         const auditEventMetadata: Record<string, unknown> = {
           reason,
-          affectedEnvironments: rotationResult.affectedFile,
+          affectedEnvironments: rotationResult.affectedFiles,
           reEncryptedCount: rotationResult.reEncryptedCount,
           rotationCount: metadata[keyName].rotationCount,
           overrideMode: shouldRotateKey,
-          affectedVariables: processedVariableNames || [], // Use actual variable names
+          affectedVariables: processedVariableNames || [],
         };
 
         await this.recordAuditEvent(
@@ -203,16 +213,14 @@ export class KeyRotationManager {
 
   public updateUsageTracking(
     decryptedDataMap: Map<string, Record<string, string>>,
-    existingUsageTracking?: KeyMetadata['usageTracking'],
-  ): KeyMetadata['usageTracking'] {
+    existingUsageTracking?: UsageTracking,
+  ): UsageTracking {
     const environmentsUsedIn = new Set(existingUsageTracking?.environmentsUsedIn || []);
     const dependentVariables = new Set(existingUsageTracking?.dependentVariables || []);
 
-    // Add all environment files that had variables processed
     for (const [envFilePath, variables] of decryptedDataMap.entries()) {
       environmentsUsedIn.add(envFilePath);
 
-      // Add all variable names that were successfully processed (filter out undefined values)
       for (const [variableName, value] of Object.entries(variables)) {
         if (value !== undefined && value !== null) {
           dependentVariables.add(variableName);
@@ -223,7 +231,7 @@ export class KeyRotationManager {
     return {
       environmentsUsedIn: Array.from(environmentsUsedIn),
       dependentVariables: Array.from(dependentVariables),
-      lastAccessedAt: new Date(), // Always update access time when usage is tracked
+      lastAccessedAt: new Date(),
     };
   }
 
@@ -248,13 +256,11 @@ export class KeyRotationManager {
         return { exists: false };
       }
 
-      // VALIDATE ROTATION CONFIG HERE
       try {
         this.validateRotationConfig(keyMetadata.rotationConfig);
       } catch (error) {
         const errorAsError = error as Error;
         logger.warn(`Invalid rotation config for key "${keyName}": ${errorAsError.message}`);
-        // Could trigger a metadata repair here if needed
       }
 
       const rotationStatus = await this.checkKeyRotationStatus(keyName, 'api');
@@ -271,7 +277,7 @@ export class KeyRotationManager {
   }
 
   /**
-   * Consolidated store method with audit trail (replaces both versions)
+   * Consolidated store method with audit trail
    */
   public async storeBaseEnvironmentKey(
     filePath: string,
@@ -319,16 +325,13 @@ export class KeyRotationManager {
 
       const metadata = await this.metadataRepo.readKeyMetadata();
 
-      // Create the rotation config object
       const rotationConfig: KeyRotationConfig = {
         maxAgeInDays: customMaxAge || this.keyRotationConfig.maxAgeInDays,
         warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
       };
 
-      // VALIDATE THE CONFIG BEFORE STORING
       const validatedConfig = this.validateRotationConfig(rotationConfig);
 
-      // Create comprehensive metadata with all tracking
       metadata[keyName] = {
         keyName,
         createdAt: new Date(),
@@ -349,7 +352,6 @@ export class KeyRotationManager {
 
       await this.metadataRepo.writeKeyMetadata(metadata);
 
-      // Record audit event
       await this.recordAuditEvent(
         keyName,
         shouldRotateKey ? 'rotated' : 'created',
@@ -379,11 +381,11 @@ export class KeyRotationManager {
   }
 
   /**
-   * Consolidated check method with audit trail (replaces both versions)
+   * Consolidated check method with audit trail
    */
   public async checkKeyRotationStatus(
     keyName: string,
-    checkSource: 'startup' | 'scheduled' | 'manual' | 'api' = 'manual',
+    checkSource: CheckSource = 'manual',
   ): Promise<{
     needsRotation: boolean;
     needsWarning: boolean;
@@ -405,7 +407,6 @@ export class KeyRotationManager {
 
       const ageInDays = this.calculateKeyAge(keyMetadata);
 
-      // VALIDATE ROTATION CONFIG HERE
       let validatedConfig: KeyRotationConfig;
       try {
         validatedConfig = this.validateRotationConfig(keyMetadata.rotationConfig);
@@ -414,7 +415,6 @@ export class KeyRotationManager {
         logger.warn(
           `Invalid rotation config for key "${keyName}", using defaults: ${errorAsError.message}`,
         );
-        // Fall back to default config if validation fails
         validatedConfig = this.keyRotationConfig;
       }
 
@@ -432,8 +432,7 @@ export class KeyRotationManager {
         daysUntilRotation: Math.max(0, daysUntilRotation),
       };
 
-      // Record audit trail
-      let healthStatus: 'healthy' | 'warning' | 'critical';
+      let healthStatus: KeyStatus;
       const recommendations: string[] = [];
 
       if (status.needsRotation) {
@@ -485,7 +484,7 @@ export class KeyRotationManager {
   }
 
   /**
-   * Gets comprehensive key information including all audit data (replaces getComprehensiveKeyInfo)
+   * Gets comprehensive key information including all audit data
    */
   public async getComprehensiveKeyInfo(keyName: string): Promise<{
     exists: boolean;
@@ -501,8 +500,9 @@ export class KeyRotationManager {
       lastRotation?: Date;
       lastHealthCheck?: Date;
       lastAccess?: Date;
-      currentStatus: string;
+      currentStatus: SystemHealth;
       totalAuditEvents: number;
+      expiredKeys: number;
     };
   }> {
     try {
@@ -515,14 +515,32 @@ export class KeyRotationManager {
 
       const rotationStatus = await this.checkKeyRotationStatus(keyName, 'api');
 
-      // Build audit summary
+      // Convert KeyStatus to SystemHealth
+      const convertKeyStatusToSystemHealth = (keyStatus: KeyStatus): SystemHealth => {
+        switch (keyStatus) {
+          case 'critical':
+          case 'expired':
+            return 'critical';
+          case 'warning':
+            return 'warning';
+          case 'healthy':
+            return 'healthy';
+          default:
+            return 'warning';
+        }
+      };
+
+      const currentKeyStatus = keyMetadata.statusTracking?.currentStatus || 'healthy';
+      const systemHealthStatus = convertKeyStatusToSystemHealth(currentKeyStatus);
+
       const auditSummary = {
         totalRotations: keyMetadata.rotationCount,
         lastRotation: keyMetadata.lastRotatedAt,
         lastHealthCheck: keyMetadata.auditTrail?.lastHealthCheck,
         lastAccess: keyMetadata.usageTracking?.lastAccessedAt,
-        currentStatus: keyMetadata.statusTracking?.currentStatus || 'unknown',
-        totalAuditEvents: keyMetadata.auditTrail?.auditTrail?.length || 0,
+        currentStatus: systemHealthStatus,
+        totalAuditEvents: keyMetadata.auditTrail?.auditEvents?.length || 0,
+        expiredKeys: 0, // Placeholder; update if you want to calculate expired keys count here
       };
 
       return {
@@ -542,22 +560,12 @@ export class KeyRotationManager {
   }
 
   /**
-   * Calculates the age of a key in days
-   */
-  private calculateKeyAge(metadata: KeyMetadata): number {
-    const referenceDate = metadata.lastRotatedAt || metadata.createdAt;
-    const now = new Date();
-    const diffTime = Math.abs(now.getTime() - referenceDate.getTime());
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  }
-
-  /**
    * Records an audit event
    */
   public async recordAuditEvent(
     keyName: string,
-    eventType: 'created' | 'rotated' | 'accessed' | 'warning_issued' | 'expired' | 'health_check',
-    severity: 'info' | 'warning' | 'error' | 'critical',
+    eventType: EventType,
+    severity: EventSeverity,
     source: string,
     details: string,
     additionalMetadata?: Record<string, unknown>,
@@ -570,11 +578,11 @@ export class KeyRotationManager {
         metadata[keyName].auditTrail = this.createEmptyAuditTrail();
       }
 
-      if (!metadata[keyName].auditTrail.auditTrail) {
-        metadata[keyName].auditTrail.auditTrail = [];
+      if (!metadata[keyName].auditTrail.auditEvents) {
+        metadata[keyName].auditTrail.auditEvents = [];
       }
 
-      metadata[keyName].auditTrail.auditTrail.push({
+      metadata[keyName].auditTrail.auditEvents.push({
         timestamp: new Date(),
         eventType,
         severity,
@@ -583,9 +591,10 @@ export class KeyRotationManager {
         metadata: additionalMetadata,
       });
 
-      if (metadata[keyName].auditTrail.auditTrail.length > 100) {
-        metadata[keyName].auditTrail.auditTrail =
-          metadata[keyName].auditTrail.auditTrail.slice(-100);
+      // Limit to last 100 audit events
+      if (metadata[keyName].auditTrail.auditEvents.length > 100) {
+        metadata[keyName].auditTrail.auditEvents =
+          metadata[keyName].auditTrail.auditEvents.slice(-100);
       }
 
       await this.metadataRepo.writeKeyMetadata(metadata);
@@ -601,8 +610,8 @@ export class KeyRotationManager {
     keyName: string,
     ageInDays: number,
     daysUntilExpiry: number,
-    status: 'healthy' | 'warning' | 'critical',
-    checkSource: 'startup' | 'scheduled' | 'manual' | 'api',
+    status: KeyStatus,
+    checkSource: CheckSource,
     recommendations?: string[],
   ): Promise<void> {
     try {
@@ -650,18 +659,11 @@ export class KeyRotationManager {
    * Performs system-wide audit with detailed reporting
    */
   public async performComprehensiveAudit(): Promise<{
-    systemHealth: 'healthy' | 'warning' | 'critical';
+    systemHealth: SystemHealth;
     keysNeedingRotation: string[];
     keysNeedingWarning: string[];
-    auditSummary: {
-      totalKeys: number;
-      healthyKeys: number;
-      warningKeys: number;
-      criticalKeys: number;
-      averageKeyAge: number;
-      oldestKeyAge: number;
-      newestKeyAge: number;
-    };
+    expiredKeys: string[];
+    auditSummary: AuditSummary;
     recommendations: string[];
   }> {
     const { keysNeedingRotation, keysNeedingWarning } = await this.checkAllKeysForRotation();
@@ -669,19 +671,29 @@ export class KeyRotationManager {
 
     const allKeys = Object.keys(metadata).filter((key) => key !== 'SYSTEM');
     const totalKeys = allKeys.length;
+    const expiredKeys: string[] = [];
+
+    // Identify expired keys separately if needed
+    for (const keyName of allKeys) {
+      const keyAge = this.calculateKeyAge(metadata[keyName]);
+      const maxAge =
+        metadata[keyName].rotationConfig?.maxAgeInDays ?? this.keyRotationConfig.maxAgeInDays;
+      if (keyAge >= maxAge) {
+        expiredKeys.push(keyName);
+      }
+    }
+
     const criticalKeys = keysNeedingRotation.length;
     const warningKeys = keysNeedingWarning.length;
-    const healthyKeys = totalKeys - criticalKeys - warningKeys;
+    const healthyKeys = totalKeys - criticalKeys - warningKeys - expiredKeys.length;
 
-    // Calculate age statistics
     const keyAges = allKeys.map((keyName) => this.calculateKeyAge(metadata[keyName]));
     const averageKeyAge =
       keyAges.length > 0 ? keyAges.reduce((a, b) => a + b, 0) / keyAges.length : 0;
     const oldestKeyAge = keyAges.length > 0 ? Math.max(...keyAges) : 0;
     const newestKeyAge = keyAges.length > 0 ? Math.min(...keyAges) : 0;
 
-    // Determine system health
-    let systemHealth: 'healthy' | 'warning' | 'critical';
+    let systemHealth: SystemHealth;
     if (criticalKeys > 0) {
       systemHealth = 'critical';
     } else if (warningKeys > 0) {
@@ -690,7 +702,6 @@ export class KeyRotationManager {
       systemHealth = 'healthy';
     }
 
-    // Generate recommendations
     const recommendations: string[] = [];
     if (criticalKeys > 0) {
       recommendations.push(`${criticalKeys} key(s) require immediate rotation`);
@@ -702,19 +713,29 @@ export class KeyRotationManager {
       recommendations.push('Consider reducing key rotation intervals');
     }
 
+    const auditSummary: AuditSummary = {
+      totalKeys,
+      healthyKeys,
+      warningKeys,
+      criticalKeys,
+      expiredKeys: expiredKeys.length,
+      averageKeyAge: Math.round(averageKeyAge * 100) / 100,
+      oldestKeyAge,
+      newestKeyAge,
+      totalAuditEvents: 0, // Could compute total audit events across all keys if needed
+      totalRotations: 0, // Could compute total rotations across all keys if needed
+      lastRotation: undefined, // Could compute if needed
+      lastHealthCheck: undefined, // Could compute if needed
+      lastAccess: undefined, // Could compute if needed
+      currentStatus: systemHealth,
+    };
+
     return {
       systemHealth,
       keysNeedingRotation,
       keysNeedingWarning,
-      auditSummary: {
-        totalKeys,
-        healthyKeys,
-        warningKeys,
-        criticalKeys,
-        averageKeyAge: Math.round(averageKeyAge * 100) / 100,
-        oldestKeyAge,
-        newestKeyAge,
-      },
+      expiredKeys,
+      auditSummary,
       recommendations,
     };
   }
@@ -727,7 +748,6 @@ export class KeyRotationManager {
       const metadata = await this.metadataRepo.readKeyMetadata();
       if (!metadata[keyName]) return;
 
-      // Update last accessed time
       if (!metadata[keyName].usageTracking) {
         metadata[keyName].usageTracking = {
           environmentsUsedIn: [],
@@ -738,7 +758,6 @@ export class KeyRotationManager {
       metadata[keyName].usageTracking.lastAccessedAt = new Date();
       await this.metadataRepo.writeKeyMetadata(metadata);
 
-      // Record audit event
       await this.recordAuditEvent(
         keyName,
         'accessed',
@@ -754,63 +773,52 @@ export class KeyRotationManager {
   /**
    * Add health check entry after rotation or other key operations
    */
-  /**
-   * Add health check entry after rotation or other key operations
-   */
   public async addHealthCheckEntry(
     keyName: string,
     keyMetadata: KeyMetadata,
     success: boolean,
     reason: string,
-    RotationResult?: RotationResult,
+    rotationResult?: RotationResult,
   ): Promise<void> {
     try {
-      // Initialize health check history if needed
       if (!keyMetadata.auditTrail.healthCheckHistory) {
         keyMetadata.auditTrail.healthCheckHistory = [];
       }
 
-      // Determine health status based on various conditions
       const healthStatus = this.determineHealthStatus(keyMetadata, success, reason);
 
-      // Map reason to checkSource for HealthCheckEvent
-      const checkSource: 'startup' | 'scheduled' | 'manual' | 'api' =
+      const checkSource: CheckSource =
         reason === 'manual'
           ? 'manual'
           : reason === 'scheduled'
             ? 'scheduled'
-            : reason === 'health-check'
+            : reason === 'health_check'
               ? 'api'
               : 'api';
 
-      // Calculate required fields for HealthCheckEvent
       const ageInDays = this.calculateKeyAge(keyMetadata);
       const daysUntilExpiry = this.calculateDaysUntilExpiry(keyMetadata);
 
-      // Create health check entry that matches HealthCheckEvent interface
       const healthCheckEntry: HealthCheckEvent = {
         timestamp: new Date(),
         ageInDays,
         daysUntilExpiry,
         status: healthStatus,
         checkSource,
-        recommendations: this.generateRecommendations(healthStatus, reason, RotationResult),
+        recommendations: this.generateRecommendations(healthStatus, reason, rotationResult),
       };
 
       keyMetadata.auditTrail.healthCheckHistory.push(healthCheckEntry);
 
-      // Update status tracking based on health check
       keyMetadata.statusTracking.currentStatus = healthStatus;
       keyMetadata.statusTracking.lastStatusChange = new Date();
 
-      // Keep only last 50 health check entries to prevent unbounded growth
       if (keyMetadata.auditTrail.healthCheckHistory.length > 50) {
         keyMetadata.auditTrail.healthCheckHistory =
           keyMetadata.auditTrail.healthCheckHistory.slice(-50);
       }
 
-      // If you need to store the additional metadata somewhere, consider adding it to an AuditEvent
-      if (RotationResult) {
+      if (rotationResult) {
         const auditEvent: AuditEvent = {
           timestamp: new Date(),
           eventType: 'health_check',
@@ -821,34 +829,28 @@ export class KeyRotationManager {
                 ? 'warning'
                 : 'info',
           source: 'health-check-service',
-          details: this.generateHealthCheckDetails(success, reason, healthStatus, RotationResult),
+          details: this.generateHealthCheckDetails(success, reason, healthStatus, rotationResult),
           metadata: {
             reason,
             success,
             healthStatus,
             keyAge: ageInDays,
             daysSinceLastRotation: this.calculateDaysSinceLastRotation(keyMetadata),
-            reEncryptedCount: RotationResult.reEncryptedCount,
-            affectedFiles: RotationResult.affectedFile,
+            reEncryptedCount: rotationResult.reEncryptedCount,
+            affectedFiles: rotationResult.affectedFiles,
           },
         };
-        keyMetadata.auditTrail.auditTrail.push(auditEvent);
+        keyMetadata.auditTrail.auditEvents.push(auditEvent);
       }
     } catch (error) {
       logger.error(`Failed to add health check entry for key ${keyName}: ${error}`);
     }
   }
 
-  // You'll also need these helper methods if they don't exist:
-  private calculateDaysUntilExpiry(keyMetadata: KeyMetadata): number {
-    const ageInDays = this.calculateKeyAge(keyMetadata);
-    return Math.max(0, keyMetadata.rotationConfig.maxAgeInDays - ageInDays);
-  }
-
   private generateRecommendations(
-    healthStatus: 'healthy' | 'warning' | 'critical' | 'expired',
+    healthStatus: KeyStatus,
     reason: string,
-    MultiRotationResult?: RotationResult,
+    rotationResult?: RotationResult,
   ): string[] | undefined {
     const recommendations: string[] = [];
 
@@ -860,72 +862,59 @@ export class KeyRotationManager {
       recommendations.push('Key has expired and should be rotated immediately');
     }
 
-    if (MultiRotationResult && !MultiRotationResult.success) {
+    if (rotationResult && !rotationResult.success) {
       recommendations.push('Previous rotation failed - investigate and retry');
     }
 
     return recommendations.length > 0 ? recommendations : undefined;
   }
 
-  /**
-   * Determine health status based on various conditions
-   */
   private determineHealthStatus(
     keyMetadata: KeyMetadata,
     success: boolean,
     reason: string,
-  ): 'healthy' | 'warning' | 'critical' | 'expired' {
-    // If operation failed, it's critical
+  ): KeyStatus {
     if (!success) {
       return 'critical';
     }
 
-    // If rotation was due to expiration, check if it was successful
     if (reason === 'expired') {
       return success ? 'healthy' : 'expired';
     }
 
-    // Calculate key age and days since last rotation
     const keyAge = this.calculateKeyAge(keyMetadata);
     const daysSinceLastRotation = this.calculateDaysSinceLastRotation(keyMetadata);
     const maxAge = keyMetadata.rotationConfig.maxAgeInDays;
     const warningThreshold = keyMetadata.rotationConfig.warningThresholdInDays;
 
-    // Check if key is expired based on max age
     if (keyAge >= maxAge) {
       return 'expired';
     }
 
-    // Check if key is approaching expiration (warning state)
     if (keyAge >= maxAge - warningThreshold) {
       return 'warning';
     }
 
-    // Check if key hasn't been rotated recently and is approaching warning threshold
     if (daysSinceLastRotation >= maxAge - warningThreshold) {
       return 'warning';
     }
 
-    // Key is healthy
     return 'healthy';
   }
 
-  /**
-   * Generate detailed health check message
-   */
   private generateHealthCheckDetails(
     success: boolean,
     reason: string,
-    healthStatus: string,
-    MultiRotationResult?: RotationResult,
+    healthStatus: KeyStatus,
+    rotationResult?: RotationResult,
   ): string {
     if (!success) {
       return `Key operation failed during ${reason} operation. Status: ${healthStatus}`;
     }
 
     const baseMessage = `Key operation completed successfully. Status: ${healthStatus}.`;
-    const rotationDetails = MultiRotationResult
-      ? ` Re-encrypted ${MultiRotationResult.reEncryptedCount} variables across ${MultiRotationResult.affectedFile.length} files.`
+    const rotationDetails = rotationResult
+      ? ` Re-encrypted ${rotationResult.reEncryptedCount} variables across ${rotationResult.affectedFiles.length} files.`
       : '';
 
     const statusMessages = {
@@ -935,17 +924,12 @@ export class KeyRotationManager {
       expired: 'Key has exceeded maximum age and should be rotated immediately.',
     };
 
-    return `${baseMessage}${rotationDetails} ${statusMessages[healthStatus as keyof typeof statusMessages] || ''}`;
+    return `${baseMessage}${rotationDetails} ${statusMessages[healthStatus] || ''}`;
   }
 
-  /**
-   * Calculate days since last rotation
-   */
   private calculateDaysSinceLastRotation(keyMetadata: KeyMetadata): number {
     const now = new Date();
-    const lastRotatedAt = keyMetadata.lastRotatedAt
-      ? new Date(keyMetadata.lastRotatedAt)
-      : new Date(keyMetadata.createdAt);
+    const lastRotatedAt = keyMetadata.lastRotatedAt || keyMetadata.createdAt;
     return Math.floor((now.getTime() - lastRotatedAt.getTime()) / (1000 * 60 * 60 * 24));
   }
 
@@ -959,7 +943,7 @@ export class KeyRotationManager {
     const errors: Array<{ keyName: string; error: string }> = [];
 
     for (const [keyName, keyMetadata] of Object.entries(metadata)) {
-      if (keyName === 'SYSTEM') continue; // Skip system metadata
+      if (keyName === 'SYSTEM') continue;
 
       try {
         this.validateRotationConfig(keyMetadata.rotationConfig);
@@ -967,17 +951,15 @@ export class KeyRotationManager {
         try {
           const errorAsError = error as Error;
 
-          // Attempt to repair with default config
           keyMetadata.rotationConfig = {
             maxAgeInDays: this.keyRotationConfig.maxAgeInDays,
             warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
           };
           repairedKeys.push(keyName);
 
-          // Log the repair
           await this.recordAuditEvent(
             keyName,
-            'rotated', // or create a new event type like 'metadata_repaired'
+            'rotated',
             'warning',
             'validateAndRepairAllMetadata',
             `Repaired invalid rotation config: ${errorAsError.message}`,
@@ -998,7 +980,7 @@ export class KeyRotationManager {
     }
 
     return {
-      totalKeys: Object.keys(metadata).length - 1, // Exclude SYSTEM
+      totalKeys: Object.keys(metadata).length - 1,
       repairedKeys,
       errors,
     };
@@ -1006,14 +988,12 @@ export class KeyRotationManager {
 
   public createEmptyAuditTrail(): AuditTrail {
     return {
-      //scheduledRotationHistory: [],
-      auditTrail: [],
+      auditEvents: [],
       rotationHistory: [],
       healthCheckHistory: [],
     };
   }
 
-  // Helper function to create default usage tracking
   public createDefaultUsageTracking(): UsageTracking {
     return {
       environmentsUsedIn: [],
@@ -1028,18 +1008,29 @@ export class KeyRotationManager {
     };
   }
 
-  /**
-   * Simple key hashing for audit purposes (not for security)
-   */
   public hashKey(key: string): string {
-    // Simple hash for audit trail - not cryptographically secure
     let hash = 0;
     for (let i = 0; i < key.length; i++) {
       const char = key.charCodeAt(i);
       hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32-bit integer
+      hash |= 0;
     }
     return Math.abs(hash).toString(16);
+  }
+
+  private calculateDaysUntilExpiry(keyMetadata: KeyMetadata): number {
+    const ageInDays = this.calculateKeyAge(keyMetadata);
+    return Math.max(0, keyMetadata.rotationConfig.maxAgeInDays - ageInDays);
+  }
+
+  /**
+   * Calculates the age of a key in days
+   */
+  private calculateKeyAge(metadata: KeyMetadata): number {
+    const referenceDate = metadata.lastRotatedAt || metadata.createdAt;
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - referenceDate.getTime());
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   }
 
   public validateRotationConfig(config: KeyRotationConfig): KeyRotationConfig {
@@ -1064,7 +1055,6 @@ export class KeyRotationManager {
       );
     }
 
-    // Additional validation: warning threshold should be less than max age
     if (config.warningThresholdInDays >= config.maxAgeInDays) {
       ErrorHandler.logAndThrow(
         'Invalid rotation config: warningThresholdInDays must be less than maxAgeInDays',
@@ -1072,6 +1062,6 @@ export class KeyRotationManager {
       );
     }
 
-    return config as KeyRotationConfig;
+    return config;
   }
 }

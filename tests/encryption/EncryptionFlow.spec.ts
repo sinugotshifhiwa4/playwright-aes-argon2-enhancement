@@ -4,9 +4,10 @@ import {
   EnvironmentConstants,
   EnvironmentSecretKeys,
 } from '../../src/config/environment/dotenv/constants';
+//import { EncryptionVerificationService } from '../../src/cryptography/service/encryptionVerificationService';
 import { EnvironmentFilePaths } from '../../src/config/environment/dotenv/mapping';
 import { EncryptionTargets } from '../../src/config/environment/variables/encryptionTargets';
-//import logger from '../../src/utils/logging/loggerManager';
+import logger from '../../src/utils/logging/loggerManager';
 
 test.describe('Key Management Test Suite', () => {
   test('Rotate secret key and Re-encrypt data @rotate-key', async ({ cryptoOrchestrator }) => {
@@ -20,6 +21,11 @@ test.describe('Key Management Test Suite', () => {
       true,
     );
   });
+
+  test('Check key rotation status @status', async ({ cryptoOrchestrator }) => {
+    const response = await cryptoOrchestrator.checkKeyRotationStatus(EnvironmentSecretKeys.DEV);
+    logger.info(`Response: ${JSON.stringify(response)}`);
+  });
 });
 
 test.describe.serial('Encryption Flow @full-encryption', () => {
@@ -29,19 +35,30 @@ test.describe.serial('Encryption Flow @full-encryption', () => {
       EnvironmentConstants.BASE_ENV_FILE,
       EnvironmentSecretKeys.DEV,
       SecureKeyGenerator.generateBase64SecretKey(),
-      undefined,
-      true
+      undefined
     );
   });
 
-  test.describe('Encryption Test Suite', () => {
-    test('Encrypt environment variables @env-encrypt', async ({ cryptoOrchestrator }) => {
-      await cryptoOrchestrator.encryptEnvironmentVariables(
-        EnvironmentConstants.ENV_DIR,
-        EnvironmentFilePaths.dev,
-        EnvironmentSecretKeys.DEV,
-        EncryptionTargets.PORTAL_CREDENTIALS,
-      );
-    });
+  test('Encrypt environment variables @env-encrypt', async ({ cryptoOrchestrator }) => {
+    await cryptoOrchestrator.encryptEnvironmentVariables(
+      EnvironmentConstants.ENV_DIR,
+      EnvironmentFilePaths.dev,
+      EnvironmentSecretKeys.DEV,
+      EncryptionTargets.PORTAL_CREDENTIALS,
+    );
   });
+});
+
+test.describe('Encryption and Verification Flow @verify-enc', () => {
+ 
+  // test('Verify single environment variable encryption @env-verify-single', async () => {
+  //   const result =
+  //     await EncryptionVerificationService.verifyEnvironmentVariableEncryption('PORTAL_USERNAME');
+
+  //   expect(result.isValid).toBe(true);
+  //   expect(result.errors).toHaveLength(0);
+  //   expect(result.details.hasPrefix).toBe(true);
+  //   expect(result.details.hasCorrectParts).toBe(true);
+  //   expect(result.details.hasValidBase64Components).toBe(true);
+  // });
 });

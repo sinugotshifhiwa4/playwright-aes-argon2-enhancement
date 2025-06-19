@@ -1,4 +1,4 @@
-import { KeyRotationConfig } from '../types/keyMetadata.types.js';
+import { KeyRotationConfig } from '../types/keyManagement.types';
 
 export const KeyRotationConfigDefaults: KeyRotationConfig = {
   maxAgeInDays: 90,
