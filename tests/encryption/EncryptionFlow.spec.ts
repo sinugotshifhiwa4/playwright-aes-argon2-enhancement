@@ -1,10 +1,10 @@
-import { test } from '../../fixtures/crypto.fixture';
+import { test, expect } from '../../fixtures/crypto.fixture';
 import SecureKeyGenerator from '../../src/cryptography/key/secureKeyGenerator';
 import {
   EnvironmentConstants,
   EnvironmentSecretKeys,
 } from '../../src/config/environment/dotenv/constants';
-//import { EncryptionVerificationService } from '../../src/cryptography/service/encryptionVerificationService';
+import EncryptionVerification from '../../src/cryptography/manager/encryptionVerification';
 import { EnvironmentFilePaths } from '../../src/config/environment/dotenv/mapping';
 import { EncryptionTargets } from '../../src/config/environment/variables/encryptionTargets';
 import logger from '../../src/utils/logging/loggerManager';
@@ -35,7 +35,8 @@ test.describe.serial('Encryption Flow @full-encryption', () => {
       EnvironmentConstants.BASE_ENV_FILE,
       EnvironmentSecretKeys.DEV,
       SecureKeyGenerator.generateBase64SecretKey(),
-      undefined
+      undefined,
+      true,
     );
   });
 
@@ -46,19 +47,20 @@ test.describe.serial('Encryption Flow @full-encryption', () => {
       EnvironmentSecretKeys.DEV,
       EncryptionTargets.PORTAL_CREDENTIALS,
     );
+
+    // Verify encryption
+    const results = await EncryptionVerification.validateEncryption(
+      ['PORTAL_USERNAME', 'PORTAL_PASSWORD'],
+      EnvironmentFilePaths.dev,
+    );
+    expect(results.PORTAL_USERNAME).toBe(true);
+    expect(results.PORTAL_PASSWORD).toBe(true);
+
+    // Check if all variables are encrypted
+    // const areAllEncrypted = await EncryptionVerification.areAllEncrypted(
+    //   ['PORTAL_USERNAME', 'PORTAL_PASSWORD'],
+    //   EnvironmentFilePaths.dev,
+    // );
+    // expect(areAllEncrypted).toBe(true);
   });
-});
-
-test.describe('Encryption and Verification Flow @verify-enc', () => {
- 
-  // test('Verify single environment variable encryption @env-verify-single', async () => {
-  //   const result =
-  //     await EncryptionVerificationService.verifyEnvironmentVariableEncryption('PORTAL_USERNAME');
-
-  //   expect(result.isValid).toBe(true);
-  //   expect(result.errors).toHaveLength(0);
-  //   expect(result.details.hasPrefix).toBe(true);
-  //   expect(result.details.hasCorrectParts).toBe(true);
-  //   expect(result.details.hasValidBase64Components).toBe(true);
-  // });
 });
