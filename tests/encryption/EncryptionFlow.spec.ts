@@ -55,12 +55,14 @@ test.describe.serial('Encryption Flow @full-encryption', () => {
     );
     expect(results.PORTAL_USERNAME).toBe(true);
     expect(results.PORTAL_PASSWORD).toBe(true);
+  });
 
+  test('Decrypt environment variables @verify', async () => {
     // Check if all variables are encrypted
-    // const areAllEncrypted = await EncryptionVerification.areAllEncrypted(
-    //   ['PORTAL_USERNAME', 'PORTAL_PASSWORD'],
-    //   EnvironmentFilePaths.dev,
-    // );
-    // expect(areAllEncrypted).toBe(true);
+    const areAllEncrypted = EncryptionVerification.areAllEncrypted(
+      ['PORTAL_USERNAME', 'PORTAL_PASSWORD'],
+      EnvironmentFilePaths.dev,
+    );
+    expect(areAllEncrypted).toBe(true);
   });
 });
