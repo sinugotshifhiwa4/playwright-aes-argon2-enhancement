@@ -18,6 +18,8 @@ import {
   RotationReason,
   CheckSource,
   SystemHealth,
+  KeyMetrics,
+  KeyRotationCheck,
 } from '../types/keyManagement.types';
 import ErrorHandler from '../../utils/errors/errorHandler';
 import logger from '../../utils/logging/loggerManager';
@@ -25,11 +27,11 @@ import logger from '../../utils/logging/loggerManager';
 export class KeyLifecycleManager {
   public readonly keyRotationConfig: KeyRotationConfig;
   private environmentSecretFileManager: EnvironmentSecretFileManager;
-  private metadataRepo: KeyMetadataRepository;
+  private keyMetadataRepository: KeyMetadataRepository;
 
   constructor(
     environmentSecretFileManager: EnvironmentSecretFileManager,
-    metadataRepo: KeyMetadataRepository,
+    keyMetadataRepository: KeyMetadataRepository,
     rotationConfig?: Partial<KeyRotationConfig>,
   ) {
     this.keyRotationConfig = {
@@ -38,38 +40,22 @@ export class KeyLifecycleManager {
         rotationConfig?.warningThresholdInDays ?? KeyRotationConfigDefaults.warningThresholdInDays,
     };
     this.environmentSecretFileManager = environmentSecretFileManager;
-    this.metadataRepo = metadataRepo;
+    this.keyMetadataRepository = keyMetadataRepository;
   }
 
-  /**
-   * Checks all keys for rotation requirements with audit trail
-   */
   public async checkAllKeysForRotation(): Promise<{
     keysNeedingRotation: string[];
     keysNeedingWarning: string[];
   }> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
-      const keysNeedingRotation: string[] = [];
-      const keysNeedingWarning: string[] = [];
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
+      const keyNames = Object.keys(metadata);
 
-      for (const keyName of Object.keys(metadata)) {
-        const status = await this.checkKeyRotationStatus(keyName, 'scheduled');
+      const rotationChecks = await this.performRotationChecks(keyNames);
 
-        if (status.needsRotation) {
-          keysNeedingRotation.push(keyName);
-          logger.error(
-            `SECURITY ALERT: Key "${keyName}" is ${status.ageInDays} days old and MUST be rotated immediately!`,
-          );
-        } else if (status.needsWarning) {
-          keysNeedingWarning.push(keyName);
-          logger.warn(
-            `Key "${keyName}" will expire in ${status.daysUntilRotation} days (current age: ${status.ageInDays} days). Consider rotating soon.`,
-          );
-        }
-      }
+      this.logRotationAlerts(rotationChecks);
 
-      return { keysNeedingRotation, keysNeedingWarning };
+      return this.categorizeKeys(rotationChecks);
     } catch (error) {
       ErrorHandler.captureError(
         error,
@@ -78,6 +64,60 @@ export class KeyLifecycleManager {
       );
       throw error;
     }
+  }
+
+  private async performRotationChecks(keyNames: string[]): Promise<KeyRotationCheck[]> {
+    const checks: KeyRotationCheck[] = [];
+
+    for (const keyName of keyNames) {
+      const status = await this.checkKeyRotationStatus(keyName, 'scheduled');
+      checks.push({
+        keyName,
+        status,
+      });
+    }
+
+    return checks;
+  }
+
+  private logRotationAlerts(rotationChecks: KeyRotationCheck[]): void {
+    for (const check of rotationChecks) {
+      if (check.status.needsRotation) {
+        this.logSecurityAlert(check.keyName, check.status.ageInDays);
+      } else if (check.status.needsWarning) {
+        this.logWarningAlert(check.keyName, check.status.ageInDays, check.status.daysUntilRotation);
+      }
+    }
+  }
+
+  private logSecurityAlert(keyName: string, ageInDays: number): void {
+    logger.error(
+      `SECURITY ALERT: Key "${keyName}" is ${ageInDays} days old and MUST be rotated immediately!`,
+    );
+  }
+
+  private logWarningAlert(keyName: string, ageInDays: number, daysUntilRotation: number): void {
+    logger.warn(
+      `Key "${keyName}" will expire in ${daysUntilRotation} days (current age: ${ageInDays} days). Consider rotating soon.`,
+    );
+  }
+
+  private categorizeKeys(rotationChecks: KeyRotationCheck[]): {
+    keysNeedingRotation: string[];
+    keysNeedingWarning: string[];
+  } {
+    const keysNeedingRotation: string[] = [];
+    const keysNeedingWarning: string[] = [];
+
+    for (const check of rotationChecks) {
+      if (check.status.needsRotation) {
+        keysNeedingRotation.push(check.keyName);
+      } else if (check.status.needsWarning) {
+        keysNeedingWarning.push(check.keyName);
+      }
+    }
+
+    return { keysNeedingRotation, keysNeedingWarning };
   }
 
   public async updateAuditTrail(
@@ -93,112 +133,50 @@ export class KeyLifecycleManager {
     processedVariableNames?: string[],
   ): Promise<void> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
 
       if (!metadata[keyName]) {
         logger.warn(`No metadata found for key: ${keyName} during audit trail update`);
         return;
       }
 
-      let oldKeyHash: string | undefined;
-      if (!success) {
-        const currentKeyValue = await this.environmentSecretFileManager.getKeyValue(
-          keyFilePath,
-          keyName,
-        );
-        oldKeyHash = currentKeyValue ? this.hashKey(currentKeyValue) : undefined;
-      }
+      const oldKeyHash = await this.getOldKeyHash(keyFilePath, keyName, success);
       const newKeyHash = this.hashKey(newKeyValue);
 
-      if (!metadata[keyName].auditTrail) {
-        metadata[keyName].auditTrail = this.createEmptyAuditTrail();
-      }
+      this.ensureAuditTrailStructureForUpdate(metadata[keyName]);
 
-      if (!metadata[keyName].auditTrail.rotationHistory) {
-        metadata[keyName].auditTrail.rotationHistory = [];
-      }
-
-      // Use the actual processed variable names passed from the rotation service
-      const affectedVariables = processedVariableNames || [];
-
-      // Use the actual affected environments passed from the rotation service
-      const affectedEnvironments = success ? rotationResult.affectedFiles : [];
-
-      const auditEntry: RotationEvent = {
-        timestamp: startTime,
+      const auditEntry = this.createAuditEntry(
+        startTime,
         reason,
         oldKeyHash,
         newKeyHash,
-        affectedEnvironments,
-        affectedVariables,
+        rotationResult,
+        processedVariableNames,
         success,
-        overrideMode: shouldRotateKey,
-        ...(error && { errorDetails: error.message }),
-      };
+        shouldRotateKey,
+        error,
+      );
 
       metadata[keyName].auditTrail.rotationHistory.push(auditEntry);
 
       if (success && rotationResult.affectedFiles.length > 0) {
-        // Update usage tracking with actual processed variables
-        for (const envFile of rotationResult.affectedFiles) {
-          if (!metadata[keyName].usageTracking.environmentsUsedIn.includes(envFile)) {
-            metadata[keyName].usageTracking.environmentsUsedIn.push(envFile);
-          }
-        }
-
-        // Add processed variables to dependentVariables if not already present
-        if (processedVariableNames && processedVariableNames.length > 0) {
-          const existingVars = new Set(metadata[keyName].usageTracking.dependentVariables);
-          processedVariableNames.forEach((varName) => existingVars.add(varName));
-          metadata[keyName].usageTracking.dependentVariables = Array.from(existingVars);
-        }
-
-        metadata[keyName].usageTracking.lastAccessedAt = new Date();
-
-        // Update the initial audit entry if it exists and has empty arrays
-        if (processedVariableNames && processedVariableNames.length > 0) {
-          // Find the earliest entry (likely the first rotation) that has empty arrays
-          const initialAuditEntry = metadata[keyName].auditTrail.rotationHistory
-            .sort(
-              (a: RotationEvent, b: RotationEvent) => a.timestamp.getTime() - b.timestamp.getTime(),
-            )
-            .find(
-              (entry: RotationEvent) =>
-                Array.isArray(entry.affectedEnvironments) &&
-                Array.isArray(entry.affectedVariables) &&
-                entry.affectedEnvironments.length === 0 &&
-                entry.affectedVariables.length === 0,
-            );
-
-          if (initialAuditEntry) {
-            // Update the initial entry with current usage information
-            initialAuditEntry.affectedEnvironments = [...rotationResult.affectedFiles];
-            initialAuditEntry.affectedVariables = processedVariableNames;
-
-            logger.info(`Updated initial audit entry for key ${keyName} with usage information`);
-          }
-        }
+        await this.updateSuccessfulRotationMetadata(
+          metadata[keyName],
+          rotationResult,
+          processedVariableNames,
+        );
       }
 
-      await this.metadataRepo.updateSingleKeyMetadata(keyName, metadata[keyName]);
+      await this.keyMetadataRepository.updateSingleKeyMetadata(keyName, metadata[keyName]);
 
       if (success) {
-        const auditEventMetadata: Record<string, unknown> = {
-          reason,
-          affectedEnvironments: rotationResult.affectedFiles,
-          reEncryptedCount: rotationResult.reEncryptedCount,
-          rotationCount: metadata[keyName].rotationCount,
-          overrideMode: shouldRotateKey,
-          affectedVariables: processedVariableNames || [],
-        };
-
-        await this.recordAuditEvent(
+        await this.recordSuccessfulRotationAuditEvent(
           keyName,
-          'rotated',
-          'info',
-          'rotateKeyWithAudit',
-          `Key rotated successfully. Reason: ${reason}. Re-encrypted ${rotationResult.reEncryptedCount} variables: ${(processedVariableNames || []).join(', ')}. Override mode: ${shouldRotateKey}`,
-          auditEventMetadata,
+          reason,
+          rotationResult,
+          metadata[keyName].rotationCount,
+          shouldRotateKey,
+          processedVariableNames,
         );
       }
     } catch (auditError) {
@@ -209,6 +187,173 @@ export class KeyLifecycleManager {
         `Failed to update audit trail for key: ${keyName}`,
       );
     }
+  }
+
+  private async getOldKeyHash(
+    keyFilePath: string,
+    keyName: string,
+    success: boolean,
+  ): Promise<string | undefined> {
+    if (success) {
+      return undefined;
+    }
+
+    const currentKeyValue = await this.environmentSecretFileManager.getKeyValue(
+      keyFilePath,
+      keyName,
+    );
+
+    return currentKeyValue ? this.hashKey(currentKeyValue) : undefined;
+  }
+
+ private ensureAuditTrailStructureForUpdate(keyMetadata: KeyMetadata): void {
+  if (!keyMetadata.auditTrail) {
+    keyMetadata.auditTrail = this.createEmptyAuditTrail();
+    logger.debug('Initialized empty audit trail structure for update operation');
+  }
+
+  if (!keyMetadata.auditTrail.rotationHistory) {
+    keyMetadata.auditTrail.rotationHistory = [];
+    logger.debug('Initialized rotation history array for audit trail update');
+  }
+}
+
+  private createAuditEntry(
+    startTime: Date,
+    reason: RotationReason,
+    oldKeyHash: string | undefined,
+    newKeyHash: string,
+    rotationResult: RotationResult,
+    processedVariableNames: string[] | undefined,
+    success: boolean,
+    shouldRotateKey: boolean,
+    error?: Error,
+  ): RotationEvent {
+    const affectedVariables = processedVariableNames || [];
+    const affectedEnvironments = success ? rotationResult.affectedFiles : [];
+
+    const auditEntry: RotationEvent = {
+      timestamp: startTime,
+      reason,
+      oldKeyHash,
+      newKeyHash,
+      affectedEnvironments,
+      affectedVariables,
+      success,
+      overrideMode: shouldRotateKey,
+    };
+
+    if (error) {
+      auditEntry.errorDetails = error.message;
+    }
+
+    return auditEntry;
+  }
+
+  private async updateSuccessfulRotationMetadata(
+    keyMetadata: KeyMetadata,
+    rotationResult: RotationResult,
+    processedVariableNames: string[] | undefined,
+  ): Promise<void> {
+    this.updateUsageTrackingForRotation(keyMetadata, rotationResult, processedVariableNames);
+    this.updateInitialAuditEntry(keyMetadata, rotationResult, processedVariableNames);
+  }
+
+private updateUsageTrackingForRotation(
+  keyMetadata: KeyMetadata,
+  rotationResult: RotationResult,
+  processedVariableNames: string[] | undefined,
+): void {
+  // Update environments affected by rotation
+  for (const envFile of rotationResult.affectedFiles) {
+    if (!keyMetadata.usageTracking.environmentsUsedIn.includes(envFile)) {
+      keyMetadata.usageTracking.environmentsUsedIn.push(envFile);
+      logger.debug(`Added environment ${envFile} to usage tracking during rotation`);
+    }
+  }
+
+  // Track variables that were rotated
+  if (processedVariableNames && processedVariableNames.length > 0) {
+    const existingVars = new Set(keyMetadata.usageTracking.dependentVariables);
+    const newVarsAdded: string[] = [];
+    
+    processedVariableNames.forEach((varName) => {
+      if (!existingVars.has(varName)) {
+        newVarsAdded.push(varName);
+      }
+      existingVars.add(varName);
+    });
+    
+    keyMetadata.usageTracking.dependentVariables = Array.from(existingVars);
+    
+    if (newVarsAdded.length > 0) {
+      logger.info(`Rotation tracked new dependent variables: ${newVarsAdded.join(', ')}`);
+    }
+  }
+
+  keyMetadata.usageTracking.lastAccessedAt = new Date();
+  logger.debug('Updated last accessed timestamp during rotation');
+}
+
+  private updateInitialAuditEntry(
+    keyMetadata: KeyMetadata,
+    rotationResult: RotationResult,
+    processedVariableNames: string[] | undefined,
+  ): void {
+    if (!processedVariableNames || processedVariableNames.length === 0) {
+      return;
+    }
+
+    const initialAuditEntry = this.findInitialAuditEntry(keyMetadata.auditTrail.rotationHistory);
+
+    if (initialAuditEntry) {
+      initialAuditEntry.affectedEnvironments = [...rotationResult.affectedFiles];
+      initialAuditEntry.affectedVariables = processedVariableNames;
+
+      logger.info(`Updated initial audit entry for key with usage information`);
+    }
+  }
+
+  private findInitialAuditEntry(rotationHistory: RotationEvent[]): RotationEvent | undefined {
+    return rotationHistory
+      .sort((a: RotationEvent, b: RotationEvent) => a.timestamp.getTime() - b.timestamp.getTime())
+      .find(
+        (entry: RotationEvent) =>
+          Array.isArray(entry.affectedEnvironments) &&
+          Array.isArray(entry.affectedVariables) &&
+          entry.affectedEnvironments.length === 0 &&
+          entry.affectedVariables.length === 0,
+      );
+  }
+
+  private async recordSuccessfulRotationAuditEvent(
+    keyName: string,
+    reason: RotationReason,
+    rotationResult: RotationResult,
+    rotationCount: number,
+    shouldRotateKey: boolean,
+    processedVariableNames: string[] | undefined,
+  ): Promise<void> {
+    const auditEventMetadata: Record<string, unknown> = {
+      reason,
+      affectedEnvironments: rotationResult.affectedFiles,
+      reEncryptedCount: rotationResult.reEncryptedCount,
+      rotationCount,
+      overrideMode: shouldRotateKey,
+      affectedVariables: processedVariableNames || [],
+    };
+
+    const variablesList = (processedVariableNames || []).join(', ');
+    const message = `Key rotated successfully. Reason: ${reason}. Re-encrypted ${rotationResult.reEncryptedCount} variables: ${variablesList}. Override mode: ${shouldRotateKey}`;
+
+    await this.recordAuditEvent(
+      keyName,
+      'rotated',
+      'info',
+      'rotateKeyWithAudit',
+      message,
+      auditEventMetadata,
+    );
   }
 
   public updateUsageTracking(
@@ -249,7 +394,7 @@ export class KeyLifecycleManager {
     };
   }> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
       const keyMetadata = metadata[keyName];
 
       if (!keyMetadata) {
@@ -276,9 +421,6 @@ export class KeyLifecycleManager {
     }
   }
 
-  /**
-   * Consolidated store method with audit trail
-   */
   public async storeBaseEnvironmentKey(
     filePath: string,
     keyName: string,
@@ -289,87 +431,42 @@ export class KeyLifecycleManager {
     dependentVariables: string[] = [],
   ): Promise<void> {
     try {
-      let fileContent =
+      const fileContent =
         await this.environmentSecretFileManager.getOrCreateBaseEnvFileContent(filePath);
-      const keyRegex = new RegExp(`^${keyName}=.*`, 'm');
-      const keyExists = keyRegex.test(fileContent);
+      const keyExists = this.checkIfKeyExists(fileContent, keyName);
 
       if (keyExists && !shouldRotateKey) {
-        logger.info(
-          `The environment variable "${keyName}" already exists. Delete it or set shouldRotateKey=true to regenerate.`,
-        );
+        this.logKeyAlreadyExists(keyName);
         return;
       }
 
-      const effectiveMaxAge = customMaxAge || this.keyRotationConfig.maxAgeInDays;
-      const rotationInfo = customMaxAge
-        ? `with custom rotation (${effectiveMaxAge} days)`
-        : `with default rotation (${effectiveMaxAge} days)`;
-
-      if (keyExists && shouldRotateKey) {
-        fileContent = fileContent.replace(keyRegex, `${keyName}=${keyValue}`);
-        logger.info(`Environment variable "${keyName}" has been rotated (overwritten).`);
-      } else {
-        if (fileContent && !fileContent.endsWith('\n')) {
-          fileContent += '\n';
-        }
-        fileContent += `${keyName}=${keyValue}`;
-        logger.info(`Secret key "${keyName}" generated and stored ${rotationInfo}`);
-      }
-
-      await this.environmentSecretFileManager.writeSecretKeyVariableToBaseEnvFile(
-        filePath,
+      const effectiveMaxAge = this.calculateEffectiveMaxAge(customMaxAge);
+      const updatedFileContent = this.updateFileContent(
         fileContent,
         keyName,
+        keyValue,
+        keyExists,
+        shouldRotateKey,
       );
 
-      const metadata = await this.metadataRepo.readKeyMetadata();
-
-      const rotationConfig: KeyRotationConfig = {
-        maxAgeInDays: customMaxAge || this.keyRotationConfig.maxAgeInDays,
-        warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
-      };
-
-      const validatedConfig = this.validateRotationConfig(rotationConfig);
-
-      metadata[keyName] = {
+      await this.writeUpdatedFileContent(filePath, updatedFileContent, keyName);
+      await this.updateKeyMetadata(
         keyName,
-        createdAt: new Date(),
-        rotationCount:
-          keyExists && shouldRotateKey ? (metadata[keyName]?.rotationCount ?? 0) + 1 : 0,
-        lastRotatedAt: shouldRotateKey ? new Date() : undefined,
-        rotationConfig: validatedConfig,
-        auditTrail: this.createEmptyAuditTrail(),
-        usageTracking: {
-          environmentsUsedIn,
-          dependentVariables,
-        },
-        statusTracking: {
-          currentStatus: 'healthy',
-          lastStatusChange: new Date(),
-        },
-      };
-
-      await this.metadataRepo.writeKeyMetadata(metadata);
-
-      await this.recordAuditEvent(
+        customMaxAge,
+        keyExists,
+        shouldRotateKey,
+        environmentsUsedIn,
+        dependentVariables,
+      );
+      await this.recordKeyStorageAuditEvent(
         keyName,
-        shouldRotateKey ? 'rotated' : 'created',
-        'info',
-        'storeBaseEnvironmentKey',
-        `Secret key ${shouldRotateKey ? 'rotated' : 'created'} with ${effectiveMaxAge}-day rotation period`,
-        {
-          initialMaxAge: effectiveMaxAge,
-          environmentsUsedIn,
-          dependentVariables,
-        },
+        shouldRotateKey,
+        effectiveMaxAge,
+        environmentsUsedIn,
+        dependentVariables,
       );
 
-      logger.info(
-        `Environment variable "${keyName}" ${
-          shouldRotateKey ? 'rotated' : 'created'
-        } successfully with rotation tracking.`,
-      );
+      this.logSuccessfulKeyOperation(keyName, shouldRotateKey);
     } catch (error) {
       ErrorHandler.captureError(
         error,
@@ -380,9 +477,177 @@ export class KeyLifecycleManager {
     }
   }
 
-  /**
-   * Consolidated check method with audit trail
-   */
+  private checkIfKeyExists(fileContent: string, keyName: string): boolean {
+    const keyRegex = new RegExp(`^${keyName}=.*`, 'm');
+    return keyRegex.test(fileContent);
+  }
+
+  private logKeyAlreadyExists(keyName: string): void {
+    logger.info(
+      `The environment variable "${keyName}" already exists. Delete it or set shouldRotateKey=true to regenerate.`,
+    );
+  }
+
+  private calculateEffectiveMaxAge(customMaxAge?: number): number {
+    return customMaxAge || this.keyRotationConfig.maxAgeInDays;
+  }
+
+  private updateFileContent(
+    fileContent: string,
+    keyName: string,
+    keyValue: string,
+    keyExists: boolean,
+    shouldRotateKey: boolean,
+  ): string {
+    if (keyExists && shouldRotateKey) {
+      return this.rotateExistingKey(fileContent, keyName, keyValue);
+    } else {
+      return this.addNewKey(fileContent, keyName, keyValue);
+    }
+  }
+
+  private rotateExistingKey(fileContent: string, keyName: string, keyValue: string): string {
+    const keyRegex = new RegExp(`^${keyName}=.*`, 'm');
+    const updatedContent = fileContent.replace(keyRegex, `${keyName}=${keyValue}`);
+    logger.info(`Environment variable "${keyName}" has been rotated (overwritten).`);
+    return updatedContent;
+  }
+
+  private addNewKey(fileContent: string, keyName: string, keyValue: string): string {
+    let updatedContent = fileContent;
+
+    if (updatedContent && !updatedContent.endsWith('\n')) {
+      updatedContent += '\n';
+    }
+
+    updatedContent += `${keyName}=${keyValue}`;
+
+    const effectiveMaxAge = this.keyRotationConfig.maxAgeInDays;
+    const rotationInfo = `with default rotation (${effectiveMaxAge} days)`;
+    logger.info(`Secret key "${keyName}" generated and stored ${rotationInfo}`);
+
+    return updatedContent;
+  }
+
+  private async writeUpdatedFileContent(
+    filePath: string,
+    fileContent: string,
+    keyName: string,
+  ): Promise<void> {
+    await this.environmentSecretFileManager.writeSecretKeyVariableToBaseEnvFile(
+      filePath,
+      fileContent,
+      keyName,
+    );
+  }
+
+  private async updateKeyMetadata(
+    keyName: string,
+    customMaxAge: number | undefined,
+    keyExists: boolean,
+    shouldRotateKey: boolean,
+    environmentsUsedIn: string[],
+    dependentVariables: string[],
+  ): Promise<void> {
+    const metadata = await this.keyMetadataRepository.readKeyMetadata();
+    const rotationConfig = this.createRotationConfig(customMaxAge);
+    const validatedConfig = this.validateRotationConfig(rotationConfig);
+
+    metadata[keyName] = this.createKeyMetadata(
+      keyName,
+      validatedConfig,
+      keyExists,
+      shouldRotateKey,
+      environmentsUsedIn,
+      dependentVariables,
+      metadata[keyName]?.rotationCount,
+    );
+
+    await this.keyMetadataRepository.writeKeyMetadata(metadata);
+  }
+
+  private createRotationConfig(customMaxAge?: number): KeyRotationConfig {
+    return {
+      maxAgeInDays: customMaxAge || this.keyRotationConfig.maxAgeInDays,
+      warningThresholdInDays: this.keyRotationConfig.warningThresholdInDays,
+    };
+  }
+
+  private createKeyMetadata(
+    keyName: string,
+    rotationConfig: KeyRotationConfig,
+    keyExists: boolean,
+    shouldRotateKey: boolean,
+    environmentsUsedIn: string[],
+    dependentVariables: string[],
+    existingRotationCount?: number,
+  ): KeyMetadata {
+    const rotationCount = this.calculateRotationCount(
+      keyExists,
+      shouldRotateKey,
+      existingRotationCount,
+    );
+
+    return {
+      keyName,
+      createdAt: new Date(),
+      rotationCount,
+      lastRotatedAt: shouldRotateKey ? new Date() : undefined,
+      rotationConfig,
+      auditTrail: this.createEmptyAuditTrail(),
+      usageTracking: {
+        environmentsUsedIn,
+        dependentVariables,
+      },
+      statusTracking: {
+        currentStatus: 'healthy',
+        lastStatusChange: new Date(),
+      },
+    };
+  }
+
+  private calculateRotationCount(
+    keyExists: boolean,
+    shouldRotateKey: boolean,
+    existingRotationCount?: number,
+  ): number {
+    if (keyExists && shouldRotateKey) {
+      return (existingRotationCount ?? 0) + 1;
+    }
+    return 0;
+  }
+
+  private async recordKeyStorageAuditEvent(
+    keyName: string,
+    shouldRotateKey: boolean,
+    effectiveMaxAge: number,
+    environmentsUsedIn: string[],
+    dependentVariables: string[],
+  ): Promise<void> {
+    const eventType = shouldRotateKey ? 'rotated' : 'created';
+    const eventMessage = `Secret key ${eventType} with ${effectiveMaxAge}-day rotation period`;
+
+    await this.recordAuditEvent(
+      keyName,
+      eventType,
+      'info',
+      'storeBaseEnvironmentKey',
+      eventMessage,
+      {
+        initialMaxAge: effectiveMaxAge,
+        environmentsUsedIn,
+        dependentVariables,
+      },
+    );
+  }
+
+  private logSuccessfulKeyOperation(keyName: string, shouldRotateKey: boolean): void {
+    const operation = shouldRotateKey ? 'rotated' : 'created';
+    logger.info(
+      `Environment variable "${keyName}" ${operation} successfully with rotation tracking.`,
+    );
+  }
+
   public async checkKeyRotationStatus(
     keyName: string,
     checkSource: CheckSource = 'manual',
@@ -393,86 +658,19 @@ export class KeyLifecycleManager {
     daysUntilRotation: number;
   }> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
-      const keyMetadata = metadata[keyName];
+      const keyMetadata = await this.getKeyMetadata(keyName);
 
       if (!keyMetadata) {
-        return {
-          needsRotation: false,
-          needsWarning: false,
-          ageInDays: 0,
-          daysUntilRotation: this.keyRotationConfig.maxAgeInDays,
-        };
+        return this.createDefaultRotationStatus();
       }
 
       const ageInDays = this.calculateKeyAge(keyMetadata);
+      const validatedConfig = this.getValidatedRotationConfig(keyName, keyMetadata);
+      const rotationStatus = this.calculateRotationStatus(ageInDays, validatedConfig);
 
-      let validatedConfig: KeyRotationConfig;
-      try {
-        validatedConfig = this.validateRotationConfig(keyMetadata.rotationConfig);
-      } catch (error) {
-        const errorAsError = error as Error;
-        logger.warn(
-          `Invalid rotation config for key "${keyName}", using defaults: ${errorAsError.message}`,
-        );
-        validatedConfig = this.keyRotationConfig;
-      }
+      await this.processHealthCheckAndAudit(keyName, rotationStatus, checkSource);
 
-      const maxAge = validatedConfig.maxAgeInDays;
-      const daysUntilRotation = maxAge - ageInDays;
-
-      const needsRotation = ageInDays >= maxAge;
-      const needsWarning =
-        daysUntilRotation <= this.keyRotationConfig.warningThresholdInDays && !needsRotation;
-
-      const status = {
-        needsRotation,
-        needsWarning,
-        ageInDays,
-        daysUntilRotation: Math.max(0, daysUntilRotation),
-      };
-
-      let healthStatus: KeyStatus;
-      const recommendations: string[] = [];
-
-      if (status.needsRotation) {
-        healthStatus = 'critical';
-        recommendations.push('Immediate rotation required');
-      } else if (status.needsWarning) {
-        healthStatus = 'warning';
-        recommendations.push(`Consider rotating within ${status.daysUntilRotation} days`);
-      } else {
-        healthStatus = 'healthy';
-      }
-
-      await this.recordHealthCheck(
-        keyName,
-        status.ageInDays,
-        status.daysUntilRotation,
-        healthStatus,
-        checkSource,
-        recommendations,
-      );
-
-      if (status.needsRotation) {
-        await this.recordAuditEvent(
-          keyName,
-          'expired',
-          'critical',
-          'checkKeyRotationStatus',
-          `Key has expired and requires immediate rotation (${status.ageInDays} days old)`,
-        );
-      } else if (status.needsWarning) {
-        await this.recordAuditEvent(
-          keyName,
-          'warning_issued',
-          'warning',
-          'checkKeyRotationStatus',
-          `Key will expire in ${status.daysUntilRotation} days`,
-        );
-      }
-
-      return status;
+      return rotationStatus;
     } catch (error) {
       ErrorHandler.captureError(
         error,
@@ -480,6 +678,131 @@ export class KeyLifecycleManager {
         `Failed to check rotation status for key "${keyName}"`,
       );
       throw error;
+    }
+  }
+
+  private async getKeyMetadata(keyName: string): Promise<KeyMetadata | undefined> {
+    const metadata = await this.keyMetadataRepository.readKeyMetadata();
+    return metadata[keyName];
+  }
+
+  private createDefaultRotationStatus(): {
+    needsRotation: boolean;
+    needsWarning: boolean;
+    ageInDays: number;
+    daysUntilRotation: number;
+  } {
+    return {
+      needsRotation: false,
+      needsWarning: false,
+      ageInDays: 0,
+      daysUntilRotation: this.keyRotationConfig.maxAgeInDays,
+    };
+  }
+
+  private getValidatedRotationConfig(keyName: string, keyMetadata: KeyMetadata): KeyRotationConfig {
+    try {
+      return this.validateRotationConfig(keyMetadata.rotationConfig);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn(`Invalid rotation config for key "${keyName}", using defaults: ${errorMessage}`);
+      return this.keyRotationConfig;
+    }
+  }
+
+  private calculateRotationStatus(
+    ageInDays: number,
+    config: KeyRotationConfig,
+  ): {
+    needsRotation: boolean;
+    needsWarning: boolean;
+    ageInDays: number;
+    daysUntilRotation: number;
+  } {
+    const maxAge = config.maxAgeInDays;
+    const daysUntilRotation = maxAge - ageInDays;
+    const needsRotation = ageInDays >= maxAge;
+    const needsWarning =
+      daysUntilRotation <= this.keyRotationConfig.warningThresholdInDays && !needsRotation;
+
+    return {
+      needsRotation,
+      needsWarning,
+      ageInDays,
+      daysUntilRotation: Math.max(0, daysUntilRotation),
+    };
+  }
+
+  private async processHealthCheckAndAudit(
+    keyName: string,
+    status: {
+      needsRotation: boolean;
+      needsWarning: boolean;
+      ageInDays: number;
+      daysUntilRotation: number;
+    },
+    checkSource: CheckSource,
+  ): Promise<void> {
+    const { healthStatus, recommendations } = this.determineHealthStatusAndRecommendations(status);
+
+    await this.recordHealthCheck(
+      keyName,
+      status.ageInDays,
+      status.daysUntilRotation,
+      healthStatus,
+      checkSource,
+      recommendations,
+    );
+
+    await this.recordRotationAuditEvents(keyName, status);
+  }
+
+  private determineHealthStatusAndRecommendations(status: {
+    needsRotation: boolean;
+    needsWarning: boolean;
+    daysUntilRotation: number;
+  }): { healthStatus: KeyStatus; recommendations: string[] } {
+    const recommendations: string[] = [];
+    let healthStatus: KeyStatus;
+
+    if (status.needsRotation) {
+      healthStatus = 'critical';
+      recommendations.push('Immediate rotation required');
+    } else if (status.needsWarning) {
+      healthStatus = 'warning';
+      recommendations.push(`Consider rotating within ${status.daysUntilRotation} days`);
+    } else {
+      healthStatus = 'healthy';
+    }
+
+    return { healthStatus, recommendations };
+  }
+
+  private async recordRotationAuditEvents(
+    keyName: string,
+    status: {
+      needsRotation: boolean;
+      needsWarning: boolean;
+      ageInDays: number;
+      daysUntilRotation: number;
+    },
+  ): Promise<void> {
+    if (status.needsRotation) {
+      await this.recordAuditEvent(
+        keyName,
+        'expired',
+        'critical',
+        'checkKeyRotationStatus',
+        `Key has expired and requires immediate rotation (${status.ageInDays} days old)`,
+      );
+    } else if (status.needsWarning) {
+      await this.recordAuditEvent(
+        keyName,
+        'warning_issued',
+        'warning',
+        'checkKeyRotationStatus',
+        `Key will expire in ${status.daysUntilRotation} days`,
+      );
     }
   }
 
@@ -506,7 +829,7 @@ export class KeyLifecycleManager {
     };
   }> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
       const keyMetadata = metadata[keyName];
 
       if (!keyMetadata) {
@@ -571,7 +894,7 @@ export class KeyLifecycleManager {
     additionalMetadata?: Record<string, unknown>,
   ): Promise<void> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
       if (!metadata[keyName]) return;
 
       if (!metadata[keyName].auditTrail) {
@@ -597,15 +920,12 @@ export class KeyLifecycleManager {
           metadata[keyName].auditTrail.auditEvents.slice(-100);
       }
 
-      await this.metadataRepo.writeKeyMetadata(metadata);
+      await this.keyMetadataRepository.writeKeyMetadata(metadata);
     } catch (error) {
       logger.error('Failed to record audit event', error);
     }
   }
 
-  /**
-   * Records a health check event
-   */
   private async recordHealthCheck(
     keyName: string,
     ageInDays: number,
@@ -615,49 +935,94 @@ export class KeyLifecycleManager {
     recommendations?: string[],
   ): Promise<void> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
       if (!metadata[keyName]) return;
 
-      if (!metadata[keyName].auditTrail) {
-        metadata[keyName].auditTrail = this.createEmptyAuditTrail();
-      }
-
-      if (!metadata[keyName].auditTrail.healthCheckHistory) {
-        metadata[keyName].auditTrail.healthCheckHistory = [];
-      }
-
-      metadata[keyName].auditTrail.healthCheckHistory.push({
-        timestamp: new Date(),
+      this.ensureAuditTrailStructureForHealthCheck(metadata[keyName]);
+      this.addHealthCheckEntryForMonitoring(
+        metadata[keyName],
         ageInDays,
         daysUntilExpiry,
         status,
         checkSource,
         recommendations,
-      });
+      );
+      this.updateStatusIfChanged(metadata[keyName], status);
+      this.trimHealthCheckHistoryForMonitoring(metadata[keyName]);
 
-      metadata[keyName].auditTrail.lastHealthCheck = new Date();
-
-      if (!metadata[keyName].statusTracking) {
-        metadata[keyName].statusTracking = this.createDefaultStatusTracking();
-      } else if (metadata[keyName].statusTracking.currentStatus !== status) {
-        metadata[keyName].statusTracking.currentStatus = status;
-        metadata[keyName].statusTracking.lastStatusChange = new Date();
-      }
-
-      if (metadata[keyName].auditTrail.healthCheckHistory.length > 50) {
-        metadata[keyName].auditTrail.healthCheckHistory =
-          metadata[keyName].auditTrail.healthCheckHistory.slice(-50);
-      }
-
-      await this.metadataRepo.writeKeyMetadata(metadata);
+      await this.keyMetadataRepository.writeKeyMetadata(metadata);
     } catch (error) {
       logger.error('Failed to record health check', error);
     }
   }
 
-  /**
-   * Performs system-wide audit with detailed reporting
-   */
+ private ensureAuditTrailStructureForHealthCheck(keyMetadata: KeyMetadata): void {
+  if (!keyMetadata.auditTrail) {
+    keyMetadata.auditTrail = this.createEmptyAuditTrail();
+    logger.debug('Initialized audit trail for health check recording');
+  }
+
+  if (!keyMetadata.auditTrail.healthCheckHistory) {
+    keyMetadata.auditTrail.healthCheckHistory = [];
+    logger.debug('Initialized health check history for monitoring');
+  }
+
+  if (!keyMetadata.auditTrail.auditEvents) {
+    keyMetadata.auditTrail.auditEvents = [];
+    logger.debug('Initialized audit events array for health check');
+  }
+}
+
+  private addHealthCheckEntryForMonitoring(
+  keyMetadata: KeyMetadata,
+  ageInDays: number,
+  daysUntilExpiry: number,
+  status: KeyStatus,
+  checkSource: CheckSource,
+  recommendations?: string[],
+): void {
+  const healthCheckEntry: HealthCheckEvent = {
+    timestamp: new Date(),
+    ageInDays,
+    daysUntilExpiry,
+    status,
+    checkSource,
+    recommendations,
+  };
+
+  keyMetadata.auditTrail.healthCheckHistory.push(healthCheckEntry);
+  keyMetadata.auditTrail.lastHealthCheck = new Date();
+  
+  logger.debug(`Recorded health check: status=${status}, source=${checkSource}, age=${ageInDays}d`);
+  
+  if (recommendations && recommendations.length > 0) {
+    logger.info(`Health check recommendations for key: ${recommendations.join('; ')}`);
+  }
+}
+
+  private updateStatusIfChanged(keyMetadata: KeyMetadata, newStatus: KeyStatus): void {
+    if (!keyMetadata.statusTracking) {
+      keyMetadata.statusTracking = this.createDefaultStatusTracking();
+      return;
+    }
+
+    if (keyMetadata.statusTracking.currentStatus !== newStatus) {
+      keyMetadata.statusTracking.currentStatus = newStatus;
+      keyMetadata.statusTracking.lastStatusChange = new Date();
+    }
+  }
+
+private trimHealthCheckHistoryForMonitoring(keyMetadata: KeyMetadata): void {
+  const MAX_HEALTH_CHECK_ENTRIES = 50;
+  const history = keyMetadata.auditTrail.healthCheckHistory;
+
+  if (history.length > MAX_HEALTH_CHECK_ENTRIES) {
+    const removedCount = history.length - MAX_HEALTH_CHECK_ENTRIES;
+    keyMetadata.auditTrail.healthCheckHistory = history.slice(-MAX_HEALTH_CHECK_ENTRIES);
+    logger.debug(`Trimmed ${removedCount} old health check entries for monitoring`);
+  }
+}
+
   public async performComprehensiveAudit(): Promise<{
     systemHealth: SystemHealth;
     keysNeedingRotation: string[];
@@ -667,68 +1032,29 @@ export class KeyLifecycleManager {
     recommendations: string[];
   }> {
     const { keysNeedingRotation, keysNeedingWarning } = await this.checkAllKeysForRotation();
-    const metadata = await this.metadataRepo.readKeyMetadata();
+    const metadata = await this.keyMetadataRepository.readKeyMetadata();
+    const allKeys = this.getAllNonSystemKeys(metadata);
 
-    const allKeys = Object.keys(metadata).filter((key) => key !== 'SYSTEM');
-    const totalKeys = allKeys.length;
-    const expiredKeys: string[] = [];
+    const expiredKeys = this.identifyExpiredKeys(allKeys, metadata);
+    const keyMetrics = this.calculateKeyMetrics(allKeys, metadata);
+    const systemHealth = this.determineSystemHealth(
+      keysNeedingRotation.length,
+      keysNeedingWarning.length,
+    );
+    const recommendations = this.generateAuditRecommendations(
+      keysNeedingRotation.length,
+      keysNeedingWarning.length,
+      keyMetrics.averageKeyAge,
+    );
 
-    // Identify expired keys separately if needed
-    for (const keyName of allKeys) {
-      const keyAge = this.calculateKeyAge(metadata[keyName]);
-      const maxAge =
-        metadata[keyName].rotationConfig?.maxAgeInDays ?? this.keyRotationConfig.maxAgeInDays;
-      if (keyAge >= maxAge) {
-        expiredKeys.push(keyName);
-      }
-    }
-
-    const criticalKeys = keysNeedingRotation.length;
-    const warningKeys = keysNeedingWarning.length;
-    const healthyKeys = totalKeys - criticalKeys - warningKeys - expiredKeys.length;
-
-    const keyAges = allKeys.map((keyName) => this.calculateKeyAge(metadata[keyName]));
-    const averageKeyAge =
-      keyAges.length > 0 ? keyAges.reduce((a, b) => a + b, 0) / keyAges.length : 0;
-    const oldestKeyAge = keyAges.length > 0 ? Math.max(...keyAges) : 0;
-    const newestKeyAge = keyAges.length > 0 ? Math.min(...keyAges) : 0;
-
-    let systemHealth: SystemHealth;
-    if (criticalKeys > 0) {
-      systemHealth = 'critical';
-    } else if (warningKeys > 0) {
-      systemHealth = 'warning';
-    } else {
-      systemHealth = 'healthy';
-    }
-
-    const recommendations: string[] = [];
-    if (criticalKeys > 0) {
-      recommendations.push(`${criticalKeys} key(s) require immediate rotation`);
-    }
-    if (warningKeys > 0) {
-      recommendations.push(`${warningKeys} key(s) should be rotated soon`);
-    }
-    if (averageKeyAge > this.keyRotationConfig.maxAgeInDays * 0.8) {
-      recommendations.push('Consider reducing key rotation intervals');
-    }
-
-    const auditSummary: AuditSummary = {
-      totalKeys,
-      healthyKeys,
-      warningKeys,
-      criticalKeys,
-      expiredKeys: expiredKeys.length,
-      averageKeyAge: Math.round(averageKeyAge * 100) / 100,
-      oldestKeyAge,
-      newestKeyAge,
-      totalAuditEvents: 0, // Could compute total audit events across all keys if needed
-      totalRotations: 0, // Could compute total rotations across all keys if needed
-      lastRotation: undefined, // Could compute if needed
-      lastHealthCheck: undefined, // Could compute if needed
-      lastAccess: undefined, // Could compute if needed
-      currentStatus: systemHealth,
-    };
+    const auditSummary = this.createAuditSummary(
+      allKeys.length,
+      keysNeedingRotation.length,
+      keysNeedingWarning.length,
+      expiredKeys.length,
+      keyMetrics,
+      systemHealth,
+    );
 
     return {
       systemHealth,
@@ -740,12 +1066,121 @@ export class KeyLifecycleManager {
     };
   }
 
+  private getAllNonSystemKeys(metadata: Record<string, KeyMetadata>): string[] {
+    return Object.keys(metadata).filter((key) => key !== 'SYSTEM');
+  }
+
+  private identifyExpiredKeys(allKeys: string[], metadata: Record<string, KeyMetadata>): string[] {
+    const expiredKeys: string[] = [];
+
+    for (const keyName of allKeys) {
+      if (this.isKeyExpired(keyName, metadata)) {
+        expiredKeys.push(keyName);
+      }
+    }
+
+    return expiredKeys;
+  }
+
+  private isKeyExpired(keyName: string, metadata: Record<string, KeyMetadata>): boolean {
+    const keyAge = this.calculateKeyAge(metadata[keyName]);
+    const maxAge =
+      metadata[keyName].rotationConfig?.maxAgeInDays ?? this.keyRotationConfig.maxAgeInDays;
+    return keyAge >= maxAge;
+  }
+
+  private calculateKeyMetrics(
+    allKeys: string[],
+    metadata: Record<string, KeyMetadata>,
+  ): KeyMetrics {
+    if (allKeys.length === 0) {
+      return {
+        averageKeyAge: 0,
+        oldestKeyAge: 0,
+        newestKeyAge: 0,
+      };
+    }
+
+    const keyAges = allKeys.map((keyName) => this.calculateKeyAge(metadata[keyName]));
+
+    return {
+      averageKeyAge: keyAges.reduce((a, b) => a + b, 0) / keyAges.length,
+      oldestKeyAge: Math.max(...keyAges),
+      newestKeyAge: Math.min(...keyAges),
+    };
+  }
+
+  private determineSystemHealth(criticalKeys: number, warningKeys: number): SystemHealth {
+    if (criticalKeys > 0) {
+      return 'critical';
+    } else if (warningKeys > 0) {
+      return 'warning';
+    } else {
+      return 'healthy';
+    }
+  }
+
+  private generateAuditRecommendations(
+    criticalKeys: number,
+    warningKeys: number,
+    averageKeyAge: number,
+  ): string[] {
+    const recommendations: string[] = [];
+
+    if (criticalKeys > 0) {
+      recommendations.push(`${criticalKeys} key(s) require immediate rotation`);
+    }
+
+    if (warningKeys > 0) {
+      recommendations.push(`${warningKeys} key(s) should be rotated soon`);
+    }
+
+    if (this.shouldReduceRotationInterval(averageKeyAge)) {
+      recommendations.push('Consider reducing key rotation intervals');
+    }
+
+    return recommendations;
+  }
+
+  private shouldReduceRotationInterval(averageKeyAge: number): boolean {
+    const threshold = this.keyRotationConfig.maxAgeInDays * 0.8;
+    return averageKeyAge > threshold;
+  }
+
+  private createAuditSummary(
+    totalKeys: number,
+    criticalKeys: number,
+    warningKeys: number,
+    expiredKeysCount: number,
+    keyMetrics: KeyMetrics,
+    systemHealth: SystemHealth,
+  ): AuditSummary {
+    const healthyKeys = totalKeys - criticalKeys - warningKeys - expiredKeysCount;
+
+    return {
+      totalKeys,
+      healthyKeys,
+      warningKeys,
+      criticalKeys,
+      expiredKeys: expiredKeysCount,
+      averageKeyAge: Math.round(keyMetrics.averageKeyAge * 100) / 100,
+      oldestKeyAge: keyMetrics.oldestKeyAge,
+      newestKeyAge: keyMetrics.newestKeyAge,
+      totalAuditEvents: 0, // Could compute total audit events across all keys if needed
+      totalRotations: 0, // Could compute total rotations across all keys if needed
+      lastRotation: undefined, // Could compute if needed
+      lastHealthCheck: undefined, // Could compute if needed
+      lastAccess: undefined, // Could compute if needed
+      currentStatus: systemHealth,
+    };
+  }
+
   /**
    * Records key access for usage tracking
    */
   public async recordKeyAccess(keyName: string, accessSource: string): Promise<void> {
     try {
-      const metadata = await this.metadataRepo.readKeyMetadata();
+      const metadata = await this.keyMetadataRepository.readKeyMetadata();
       if (!metadata[keyName]) return;
 
       if (!metadata[keyName].usageTracking) {
@@ -756,7 +1191,7 @@ export class KeyLifecycleManager {
       }
 
       metadata[keyName].usageTracking.lastAccessedAt = new Date();
-      await this.metadataRepo.writeKeyMetadata(metadata);
+      await this.keyMetadataRepository.writeKeyMetadata(metadata);
 
       await this.recordAuditEvent(
         keyName,
@@ -770,9 +1205,6 @@ export class KeyLifecycleManager {
     }
   }
 
-  /**
-   * Add health check entry after rotation or other key operations
-   */
   public async addHealthCheckEntry(
     keyName: string,
     keyMetadata: KeyMetadata,
@@ -781,69 +1213,147 @@ export class KeyLifecycleManager {
     rotationResult?: RotationResult,
   ): Promise<void> {
     try {
-      if (!keyMetadata.auditTrail.healthCheckHistory) {
-        keyMetadata.auditTrail.healthCheckHistory = [];
-      }
+      this.initializeHealthCheckHistory(keyMetadata);
 
-      const healthStatus = this.determineHealthStatus(keyMetadata, success, reason);
-
-      const checkSource: CheckSource =
-        reason === 'manual'
-          ? 'manual'
-          : reason === 'scheduled'
-            ? 'scheduled'
-            : reason === 'health_check'
-              ? 'api'
-              : 'api';
-
-      const ageInDays = this.calculateKeyAge(keyMetadata);
-      const daysUntilExpiry = this.calculateDaysUntilExpiry(keyMetadata);
-
-      const healthCheckEntry: HealthCheckEvent = {
-        timestamp: new Date(),
-        ageInDays,
-        daysUntilExpiry,
-        status: healthStatus,
-        checkSource,
-        recommendations: this.generateRecommendations(healthStatus, reason, rotationResult),
-      };
-
-      keyMetadata.auditTrail.healthCheckHistory.push(healthCheckEntry);
-
-      keyMetadata.statusTracking.currentStatus = healthStatus;
-      keyMetadata.statusTracking.lastStatusChange = new Date();
-
-      if (keyMetadata.auditTrail.healthCheckHistory.length > 50) {
-        keyMetadata.auditTrail.healthCheckHistory =
-          keyMetadata.auditTrail.healthCheckHistory.slice(-50);
-      }
+      const healthCheckEntry = this.createHealthCheckEntry(
+        keyMetadata,
+        success,
+        reason,
+        rotationResult,
+      );
+      this.addHealthCheckToHistory(keyMetadata, healthCheckEntry);
+      this.updateKeyStatus(keyMetadata, healthCheckEntry.status);
 
       if (rotationResult) {
-        const auditEvent: AuditEvent = {
-          timestamp: new Date(),
-          eventType: 'health_check',
-          severity:
-            healthStatus === 'critical'
-              ? 'critical'
-              : healthStatus === 'warning'
-                ? 'warning'
-                : 'info',
-          source: 'health-check-service',
-          details: this.generateHealthCheckDetails(success, reason, healthStatus, rotationResult),
-          metadata: {
-            reason,
-            success,
-            healthStatus,
-            keyAge: ageInDays,
-            daysSinceLastRotation: this.calculateDaysSinceLastRotation(keyMetadata),
-            reEncryptedCount: rotationResult.reEncryptedCount,
-            affectedFiles: rotationResult.affectedFiles,
-          },
-        };
-        keyMetadata.auditTrail.auditEvents.push(auditEvent);
+        this.addRotationAuditEvent(
+          keyMetadata,
+          success,
+          reason,
+          healthCheckEntry.status,
+          rotationResult,
+        );
       }
     } catch (error) {
       logger.error(`Failed to add health check entry for key ${keyName}: ${error}`);
+    }
+  }
+
+  private initializeHealthCheckHistory(keyMetadata: KeyMetadata): void {
+    if (!keyMetadata.auditTrail.healthCheckHistory) {
+      keyMetadata.auditTrail.healthCheckHistory = [];
+    }
+  }
+
+  private createHealthCheckEntry(
+    keyMetadata: KeyMetadata,
+    success: boolean,
+    reason: string,
+    rotationResult?: RotationResult,
+  ): HealthCheckEvent {
+    const healthStatus = this.determineHealthStatus(keyMetadata, success, reason);
+    const checkSource = this.determineCheckSource(reason);
+    const ageInDays = this.calculateKeyAge(keyMetadata);
+    const daysUntilExpiry = this.calculateDaysUntilExpiry(keyMetadata);
+
+    return {
+      timestamp: new Date(),
+      ageInDays,
+      daysUntilExpiry,
+      status: healthStatus,
+      checkSource,
+      recommendations: this.generateRecommendations(healthStatus, reason, rotationResult),
+    };
+  }
+
+  private determineCheckSource(reason: string): CheckSource {
+    switch (reason) {
+      case 'manual':
+        return 'manual';
+      case 'scheduled':
+        return 'scheduled';
+      case 'health_check':
+        return 'api';
+      default:
+        return 'api';
+    }
+  }
+
+  private addHealthCheckToHistory(
+    keyMetadata: KeyMetadata,
+    healthCheckEntry: HealthCheckEvent,
+  ): void {
+    keyMetadata.auditTrail.healthCheckHistory.push(healthCheckEntry);
+    this.trimHealthCheckHistoryForRotation(keyMetadata);
+  }
+
+ private trimHealthCheckHistoryForRotation(keyMetadata: KeyMetadata): void {
+  const MAX_ROTATION_HEALTH_ENTRIES = 25; // Smaller limit for rotation-specific entries
+  const history = keyMetadata.auditTrail.healthCheckHistory;
+
+  if (history.length > MAX_ROTATION_HEALTH_ENTRIES) {
+    const removedCount = history.length - MAX_ROTATION_HEALTH_ENTRIES;
+    keyMetadata.auditTrail.healthCheckHistory = history.slice(-MAX_ROTATION_HEALTH_ENTRIES);
+    logger.debug(`Trimmed ${removedCount} health check entries post-rotation`);
+  }
+}
+
+  private updateKeyStatus(keyMetadata: KeyMetadata, healthStatus: KeyStatus): void {
+    keyMetadata.statusTracking.currentStatus = healthStatus;
+    keyMetadata.statusTracking.lastStatusChange = new Date();
+  }
+
+  private addRotationAuditEvent(
+    keyMetadata: KeyMetadata,
+    success: boolean,
+    reason: string,
+    healthStatus: KeyStatus,
+    rotationResult: RotationResult,
+  ): void {
+    const auditEvent = this.createRotationAuditEvent(
+      keyMetadata,
+      success,
+      reason,
+      healthStatus,
+      rotationResult,
+    );
+    keyMetadata.auditTrail.auditEvents.push(auditEvent);
+  }
+
+  private createRotationAuditEvent(
+    keyMetadata: KeyMetadata,
+    success: boolean,
+    reason: string,
+    healthStatus: KeyStatus,
+    rotationResult: RotationResult,
+  ): AuditEvent {
+    const ageInDays = this.calculateKeyAge(keyMetadata);
+
+    return {
+      timestamp: new Date(),
+      eventType: 'health_check',
+      severity: this.determineSeverityFromHealthStatus(healthStatus),
+      source: 'health-check-service',
+      details: this.generateHealthCheckDetails(success, reason, healthStatus, rotationResult),
+      metadata: {
+        reason,
+        success,
+        healthStatus,
+        keyAge: ageInDays,
+        daysSinceLastRotation: this.calculateDaysSinceLastRotation(keyMetadata),
+        reEncryptedCount: rotationResult.reEncryptedCount,
+        affectedFiles: rotationResult.affectedFiles,
+      },
+    };
+  }
+
+  private determineSeverityFromHealthStatus(healthStatus: string): 'critical' | 'warning' | 'info' {
+    switch (healthStatus) {
+      case 'critical':
+        return 'critical';
+      case 'warning':
+        return 'warning';
+      default:
+        return 'info';
     }
   }
 
@@ -924,13 +1434,22 @@ export class KeyLifecycleManager {
       expired: 'Key has exceeded maximum age and should be rotated immediately.',
     };
 
-    return `${baseMessage}${rotationDetails} ${statusMessages[healthStatus] || ''}`;
+    // return `${baseMessage}${rotationDetails} ${statusMessages[healthStatus] || ''}`;
+    return KeyLifecycleManager.formatHealthCheckDetails(
+      baseMessage,
+      rotationDetails,
+      statusMessages,
+      healthStatus,
+    );
   }
 
-  private calculateDaysSinceLastRotation(keyMetadata: KeyMetadata): number {
-    const now = new Date();
-    const lastRotatedAt = keyMetadata.lastRotatedAt || keyMetadata.createdAt;
-    return Math.floor((now.getTime() - lastRotatedAt.getTime()) / (1000 * 60 * 60 * 24));
+  private static formatHealthCheckDetails(
+    baseMessage: string,
+    rotationDetails: string,
+    statusMessages: Record<KeyStatus, string>,
+    healthStatus: KeyStatus,
+  ): string {
+    return `${baseMessage}${rotationDetails} ${statusMessages[healthStatus] || ''}`;
   }
 
   public async validateAndRepairAllMetadata(): Promise<{
@@ -938,7 +1457,7 @@ export class KeyLifecycleManager {
     repairedKeys: string[];
     errors: Array<{ keyName: string; error: string }>;
   }> {
-    const metadata = await this.metadataRepo.readKeyMetadata();
+    const metadata = await this.keyMetadataRepository.readKeyMetadata();
     const repairedKeys: string[] = [];
     const errors: Array<{ keyName: string; error: string }> = [];
 
@@ -975,7 +1494,7 @@ export class KeyLifecycleManager {
     }
 
     if (repairedKeys.length > 0) {
-      await this.metadataRepo.writeKeyMetadata(metadata);
+      await this.keyMetadataRepository.writeKeyMetadata(metadata);
       logger.info(`Repaired rotation config for keys: ${repairedKeys.join(', ')}`);
     }
 
@@ -1021,6 +1540,12 @@ export class KeyLifecycleManager {
   private calculateDaysUntilExpiry(keyMetadata: KeyMetadata): number {
     const ageInDays = this.calculateKeyAge(keyMetadata);
     return Math.max(0, keyMetadata.rotationConfig.maxAgeInDays - ageInDays);
+  }
+
+  private calculateDaysSinceLastRotation(keyMetadata: KeyMetadata): number {
+    const now = new Date();
+    const lastRotatedAt = keyMetadata.lastRotatedAt || keyMetadata.createdAt;
+    return Math.floor((now.getTime() - lastRotatedAt.getTime()) / (1000 * 60 * 60 * 24));
   }
 
   /**

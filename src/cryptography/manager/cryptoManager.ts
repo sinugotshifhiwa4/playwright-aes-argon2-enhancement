@@ -313,6 +313,10 @@ export class CryptoManager {
     };
   }
 
+  private static formatEncryptedPayload(salt: string, iv: string, cipherText: string, hmacBase64: string): string {
+    return `${SECURITY_CONSTANTS.FORMAT.PREFIX}${salt}:${iv}:${cipherText}:${hmacBase64}`;
+  }
+
   /**
    * Helper to create the encrypted payload with HMAC
    */
@@ -336,9 +340,9 @@ export class CryptoManager {
     ]);
     const hmacBase64 = await CryptoManager.computeHMAC(hmacKey, dataToHmac);
 
-    // Format: ENC2:salt:iv:cipherText:hmac
-    return `${SECURITY_CONSTANTS.FORMAT.PREFIX}${salt}:${iv}:${cipherText}:${hmacBase64}`;
+    return CryptoManager.formatEncryptedPayload(salt, iv, cipherText, hmacBase64);
   }
+
 
   // Decrypt
 

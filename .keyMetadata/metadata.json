@@ -1,9 +1,9 @@
 {
   "DEV_SECRET_KEY": {
     "keyName": "DEV_SECRET_KEY",
-    "createdAt": "2025-06-19T20:44:55.289Z",
-    "lastRotatedAt": "2025-06-19T20:45:26.630Z",
-    "rotationCount": 1,
+    "createdAt": "2025-06-20T07:58:15.312Z",
+    "lastRotatedAt": "2025-06-20T07:59:00.677Z",
+    "rotationCount": 2,
     "rotationConfig": {
       "maxAgeInDays": 30,
       "warningThresholdInDays": 7
@@ -11,7 +11,7 @@
     "auditTrail": {
       "auditEvents": [
         {
-          "timestamp": "2025-06-19T20:44:55.300Z",
+          "timestamp": "2025-06-20T07:58:15.317Z",
           "eventType": "rotated",
           "severity": "info",
           "source": "storeBaseEnvironmentKey",
@@ -23,14 +23,14 @@
           }
         },
         {
-          "timestamp": "2025-06-19T20:45:26.651Z",
+          "timestamp": "2025-06-20T07:59:00.691Z",
           "eventType": "accessed",
           "severity": "info",
           "source": "rotation-service",
           "details": "Key accessed from rotation-service"
         },
         {
-          "timestamp": "2025-06-19T20:45:26.674Z",
+          "timestamp": "2025-06-20T07:59:00.706Z",
           "eventType": "rotated",
           "severity": "info",
           "source": "rotateKeyWithAudit",
@@ -41,7 +41,7 @@
               ".env.dev"
             ],
             "reEncryptedCount": 2,
-            "rotationCount": 1,
+            "rotationCount": 2,
             "overrideMode": true,
             "affectedVariables": [
               "PORTAL_USERNAME",
@@ -50,17 +50,17 @@
           }
         },
         {
-          "timestamp": "2025-06-19T20:45:26.680Z",
+          "timestamp": "2025-06-20T07:59:00.711Z",
           "eventType": "rotated",
           "severity": "info",
           "source": "rotateKeyWithAudit",
           "details": "Key rotation completed successfully for environment .env.dev",
           "metadata": {
             "reason": "manual",
-            "rotationCount": 1,
+            "rotationCount": 2,
             "reEncryptedCount": 2,
             "environmentFile": ".env.dev",
-            "durationMs": 1981,
+            "durationMs": 1717,
             "newMaxAge": 30,
             "processedVariables": [
               "PORTAL_USERNAME",
@@ -71,9 +71,9 @@
       ],
       "rotationHistory": [
         {
-          "timestamp": "2025-06-19T20:45:24.697Z",
+          "timestamp": "2025-06-20T07:58:58.993Z",
           "reason": "manual",
-          "newKeyHash": "68440ef6",
+          "newKeyHash": "5724fe2e",
           "affectedEnvironments": [
             ".env.dev"
           ],
@@ -87,7 +87,7 @@
       ],
       "healthCheckHistory": [
         {
-          "timestamp": "2025-06-19T20:45:26.691Z",
+          "timestamp": "2025-06-20T07:59:00.720Z",
           "ageInDays": 1,
           "daysUntilExpiry": 29,
           "status": "healthy",
@@ -95,7 +95,7 @@
           "recommendations": []
         }
       ],
-      "lastHealthCheck": "2025-06-19T20:45:26.691Z"
+      "lastHealthCheck": "2025-06-20T07:59:00.720Z"
     },
     "usageTracking": {
       "environmentsUsedIn": [
@@ -105,11 +105,11 @@
         "PORTAL_USERNAME",
         "PORTAL_PASSWORD"
       ],
-      "lastAccessedAt": "2025-06-19T20:45:26.661Z"
+      "lastAccessedAt": "2025-06-20T07:59:00.699Z"
     },
     "statusTracking": {
       "currentStatus": "healthy",
-      "lastStatusChange": "2025-06-19T20:45:26.630Z"
+      "lastStatusChange": "2025-06-20T07:59:00.677Z"
     }
   }
 }

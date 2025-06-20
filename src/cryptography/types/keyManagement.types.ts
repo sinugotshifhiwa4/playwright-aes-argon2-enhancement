@@ -141,3 +141,19 @@ export interface StartupSecurityCheckResult {
   auditSummary: AuditSummary;
   recommendations: string[];
 }
+
+export interface KeyMetrics {
+  averageKeyAge: number;
+  oldestKeyAge: number;
+  newestKeyAge: number;
+}
+
+export interface KeyRotationCheck {
+  keyName: string;
+  status: {
+    needsRotation: boolean;
+    needsWarning: boolean;
+    ageInDays: number;
+    daysUntilRotation: number;
+  };
+}

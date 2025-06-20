@@ -9,7 +9,7 @@ node_modules/
 /downloads/
 /ortoni-report/
 /ap_template/
-/.cryptoMetadata/
+/.keyMetadata/
 package-lock.json
 results.trx
 results.xml
