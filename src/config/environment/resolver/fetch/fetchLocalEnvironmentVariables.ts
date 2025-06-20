@@ -57,55 +57,87 @@ export class FetchLocalEnvironmentVariables {
 
   /**
    * Get admin credentials for specified environment
-   * @param environment - The environment ('dev', 'uat', or 'prod'). Defaults to 'dev'
+   * @param environmentForSecretKeyVariable - The environment ('dev', 'uat', or 'prod'). Defaults to 'dev'
+   * @param shouldDecrypt - Whether to decrypt the credentials. Defaults to true
    */
   public async getAdminCredentials(
     environmentForSecretKeyVariable: EnvironmentStage,
+    shouldDecrypt: boolean = true
   ): Promise<Credentials> {
     EnvironmentUtils.verifyCredentials({
       username: ENV.ADMIN_USERNAME,
       password: ENV.ADMIN_PASSWORD,
     });
 
-    return EnvironmentUtils.decryptCredentials(
-      ENV.ADMIN_USERNAME,
-      ENV.ADMIN_PASSWORD,
-      EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
-    );
+    if (shouldDecrypt) {
+      return EnvironmentUtils.decryptCredentials(
+        ENV.ADMIN_USERNAME,
+        ENV.ADMIN_PASSWORD,
+        EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
+      );
+    } else {
+      return {
+        username: ENV.ADMIN_USERNAME,
+        password: ENV.ADMIN_PASSWORD,
+      };
+    }
   }
 
   /**
    * Get portal credentials for specified environment
-   * @param environment - The environment ('dev', 'uat', or 'prod'). Defaults to 'dev'
+   * @param environmentForSecretKeyVariable - The environment ('dev', 'uat', or 'prod'). Defaults to 'dev'
+   * @param shouldDecrypt - Whether to decrypt the credentials. Defaults to true
    */
   public async getPortalCredentials(
     environmentForSecretKeyVariable: EnvironmentStage,
+    shouldDecrypt: boolean = true
   ): Promise<Credentials> {
     EnvironmentUtils.verifyCredentials({
       username: ENV.PORTAL_USERNAME,
       password: ENV.PORTAL_PASSWORD,
     });
 
-    return EnvironmentUtils.decryptCredentials(
-      ENV.PORTAL_USERNAME,
-      ENV.PORTAL_PASSWORD,
-      EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
-    );
+    if (shouldDecrypt) {
+      return EnvironmentUtils.decryptCredentials(
+        ENV.PORTAL_USERNAME,
+        ENV.PORTAL_PASSWORD,
+        EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
+      );
+    } else {
+      return {
+        username: ENV.PORTAL_USERNAME,
+        password: ENV.PORTAL_PASSWORD,
+      };
+    }
   }
 
   // Database
+  /**
+   * Get database credentials for specified environment
+   * @param environmentForSecretKeyVariable - The environment ('dev', 'uat', or 'prod'). Defaults to 'dev'
+   * @param shouldDecrypt - Whether to decrypt the credentials. Defaults to true
+   */
   public async getDatabaseCredentials(
     environmentForSecretKeyVariable: EnvironmentStage,
+    shouldDecrypt: boolean = true
   ): Promise<Credentials> {
     EnvironmentUtils.verifyCredentials({
       username: ENV.DB_USERNAME,
       password: ENV.DB_PASSWORD,
     });
-    return EnvironmentUtils.decryptCredentials(
-      ENV.DB_USERNAME,
-      ENV.DB_PASSWORD,
-      EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
-    );
+    
+    if (shouldDecrypt) {
+      return EnvironmentUtils.decryptCredentials(
+        ENV.DB_USERNAME,
+        ENV.DB_PASSWORD,
+        EnvironmentUtils.getSecretKeyForEnvironment(environmentForSecretKeyVariable),
+      );
+    } else {
+      return {
+        username: ENV.DB_USERNAME,
+        password: ENV.DB_PASSWORD,
+      };
+    }
   }
 
   public async getDatabaseServer(): Promise<string> {
