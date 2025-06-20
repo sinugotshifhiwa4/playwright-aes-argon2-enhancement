@@ -69,22 +69,34 @@ export default class ErrorProcessor {
    * Get the error message from any error type
    */
   public static getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return this.cleanMessage(error.message);
-    }
-
+    // Handle different error types with priority
     if (axios.isAxiosError(error)) {
       return this.formatAxiosErrorMessage(error);
+    }
+
+    if (error instanceof Error) {
+      return this.cleanMessage(error.message);
     }
 
     if (typeof error === 'string') {
       return this.cleanMessage(error);
     }
 
+    // Handle error-like objects
     if (error && typeof error === 'object') {
-      const message = (error as Record<string, unknown>).message;
-      if (typeof message === 'string') {
-        return this.cleanMessage(message);
+      const errorObj = error as Record<string, unknown>;
+
+      // Try different message properties
+      const messageProps = ['message', 'error', 'description', 'detail'];
+      for (const prop of messageProps) {
+        if (typeof errorObj[prop] === 'string') {
+          return this.cleanMessage(errorObj[prop]);
+        }
+      }
+
+      // Try to stringify if it looks like an error object
+      if ('name' in errorObj || 'code' in errorObj) {
+        return this.cleanMessage(JSON.stringify(errorObj));
       }
     }
 
@@ -322,8 +334,17 @@ export default class ErrorProcessor {
   private static findCategoryFromErrorMessage(
     errorMessage: string,
   ): { category: ErrorCategory; context: string } | null {
-    // Define category-context mapping with more precise keywords to avoid false positives
+    // Normalize the message for better matching
+    const normalized = errorMessage.toLowerCase().trim();
+
+    // Define category-context mapping with improved keyword matching
     const categoryContextMap = [
+      // Rate limiting - check before general HTTP errors
+      {
+        category: ErrorCategory.RATE_LIMIT,
+        context: 'Rate Limit Error',
+        keywords: ['rate limit', 'too many requests', 'quota exceeded', 'throttled'],
+      },
       // Timeout errors - prioritize these first
       {
         category: ErrorCategory.TIMEOUT,
@@ -337,8 +358,9 @@ export default class ErrorProcessor {
         keywords: [
           'authentication failed',
           'login failed',
-          'unauthorized access',
-          'not authenticated',
+          'unauthorized',
+          'invalid credentials',
+          'auth failed',
         ],
       },
       {
@@ -346,117 +368,79 @@ export default class ErrorProcessor {
         context: 'Permission Error',
         keywords: [
           'authorization failed',
-          'forbidden access',
           'forbidden',
           'access denied',
           'permission denied',
+          'insufficient privileges',
         ],
       },
-      // Database errors - use more specific phrases to avoid false positives
+      // Database errors - use more specific phrases
       {
         category: ErrorCategory.DATABASE,
         context: 'Database Error',
-        keywords: [
-          'database error',
-          'database connection failed',
-          'sql error',
-          'db query failed',
-          'database exception',
-        ],
+        keywords: ['database error', 'db error', 'sql error', 'query failed', 'database exception'],
       },
       {
         category: ErrorCategory.CONNECTION,
-        context: 'Database Connection Error',
+        context: 'Connection Error',
         keywords: [
-          'database connection failed',
-          'failed to connect to database',
+          'connection failed',
           'connection refused',
+          'connection timeout',
+          'unable to connect',
         ],
       },
       {
         category: ErrorCategory.CONSTRAINT,
         context: 'Database Constraint Error',
-        keywords: ['constraint violation', 'duplicate key', 'foreign key constraint'],
-      },
-      {
-        category: ErrorCategory.TRANSACTION,
-        context: 'Database Transaction Error',
-        keywords: ['transaction failed', 'rollback transaction', 'deadlock detected'],
+        keywords: ['constraint violation', 'duplicate key', 'foreign key', 'unique constraint'],
       },
       // Not found errors
       {
         category: ErrorCategory.NOT_FOUND,
         context: 'Not Found Error',
-        keywords: ['not found', 'resource missing', "doesn't exist", 'no such resource'],
+        keywords: ['not found', 'does not exist', 'missing', 'no such'],
       },
       // Network errors
       {
         category: ErrorCategory.NETWORK,
         context: 'Network Error',
-        keywords: ['network failure', 'connection refused', 'network timeout'],
+        keywords: ['network error', 'network failure', 'dns', 'host unreachable'],
       },
       // Validation errors
       {
         category: ErrorCategory.VALIDATION,
         context: 'Validation Error',
-        keywords: ['validation', 'invalid', 'schema'],
-      },
-      // Resource limit errors
-      {
-        category: ErrorCategory.RESOURCE_LIMIT,
-        context: 'Resource Limit Error',
-        keywords: ['resource limit', 'quota', 'no space', 'disk full'],
-      },
-      // File system errors
-      {
-        category: ErrorCategory.IO,
-        context: 'File System Error',
-        keywords: ['file', 'directory', 'path', 'fs', 'i/o', 'input/output'],
+        keywords: ['validation', 'invalid', 'schema', 'malformed'],
       },
       // Configuration errors
       {
         category: ErrorCategory.CONFIGURATION,
         context: 'Configuration Error',
-        keywords: ['config', 'setting', 'environment', 'configuration'],
+        keywords: ['config', 'configuration', 'environment variable', 'missing setting'],
       },
-      // Service errors
+      // Memory and resource errors
       {
-        category: ErrorCategory.SERVICE,
-        context: 'Service Error',
-        keywords: ['service', 'unavailable'],
+        category: ErrorCategory.MEMORY,
+        context: 'Memory Error',
+        keywords: ['out of memory', 'memory', 'heap', 'allocation failed'],
       },
-      // UI errors
       {
-        category: ErrorCategory.UI,
-        context: 'UI Error',
-        keywords: ['ui', 'interface', 'view', 'render'],
-      },
-      // Test errors
-      {
-        category: ErrorCategory.TEST,
-        context: 'Test Error',
-        keywords: ['test failed', 'test error'],
-      },
-      // Conflict errors
-      {
-        category: ErrorCategory.CONFLICT,
-        context: 'Conflict Error',
-        keywords: ['conflict'],
+        category: ErrorCategory.RESOURCE_LIMIT,
+        context: 'Resource Limit Error',
+        keywords: ['resource limit', 'quota', 'no space', 'disk full', 'limit exceeded'],
       },
     ];
 
-    // Check for matching category and context using word boundary matching
+    // Use exact phrase matching first, then partial matching
     for (const mapping of categoryContextMap) {
       for (const keyword of mapping.keywords) {
-        // Build a more precise matching pattern
-        const hasMatch =
-          errorMessage.includes(keyword) &&
-          (errorMessage === keyword ||
-            new RegExp(`[\\s.,;:"'!?()\\[\\]{}|\\-]${keyword}[\\s.,;:"'!?()\\[\\]{}|\\-]`).test(
-              ` ${errorMessage} `,
-            ));
-
-        if (hasMatch) {
+        // Exact match or word boundary match
+        if (
+          normalized === keyword ||
+          (normalized.includes(keyword) &&
+            new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`).test(normalized))
+        ) {
           return {
             category: mapping.category,
             context: mapping.context,
@@ -514,30 +498,39 @@ export default class ErrorProcessor {
     const statusCode = error.response?.status;
 
     if (!statusCode) {
+      // Check if it's a timeout specifically
+      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        return ErrorCategory.TIMEOUT;
+      }
       return ErrorCategory.NETWORK;
     }
 
-    if (statusCode === 401) {
-      return ErrorCategory.AUTHENTICATION;
+    // More specific HTTP error categorization
+    switch (statusCode) {
+      case 401:
+        return ErrorCategory.AUTHENTICATION;
+      case 403:
+        return ErrorCategory.AUTHORIZATION;
+      case 404:
+        return ErrorCategory.NOT_FOUND;
+      case 409:
+        return ErrorCategory.CONFLICT;
+      case 429:
+        return ErrorCategory.RATE_LIMIT;
+      case 422:
+        return ErrorCategory.VALIDATION;
+      case 408:
+      case 504:
+        return ErrorCategory.TIMEOUT;
+      default:
+        if (statusCode >= 400 && statusCode < 500) {
+          return ErrorCategory.HTTP_CLIENT;
+        }
+        if (statusCode >= 500) {
+          return ErrorCategory.HTTP_SERVER;
+        }
+        return ErrorCategory.UNKNOWN;
     }
-
-    if (statusCode === 403) {
-      return ErrorCategory.AUTHORIZATION;
-    }
-
-    if (statusCode === 404) {
-      return ErrorCategory.NOT_FOUND;
-    }
-
-    if (statusCode >= 400 && statusCode < 500) {
-      return ErrorCategory.HTTP_CLIENT;
-    }
-
-    if (statusCode >= 500) {
-      return ErrorCategory.HTTP_SERVER;
-    }
-
-    return ErrorCategory.UNKNOWN;
   }
 
   /**

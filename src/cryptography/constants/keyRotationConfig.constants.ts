@@ -1,7 +1,6 @@
-import { KeyRotationConfig } from '../types/keyMetadata.types.js';
+import { KeyRotationConfig } from '../types/keyManagement.types';
 
 export const KeyRotationConfigDefaults: KeyRotationConfig = {
   maxAgeInDays: 90,
-  warningThresholdInDays: 7,
-  enableAutoRotation: false,
+  warningThresholdInDays: 7
 };

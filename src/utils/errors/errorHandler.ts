@@ -1,6 +1,7 @@
 import axios from 'axios';
 import ApiTestExpectation from '../../api/context/apiTestExpectation';
 import { ErrorCategory } from '../../config/types/enums/error-category.enum';
+import { ErrorDetails } from '../../config/types/errors/error-handler.types';
 import logger from '../logging/loggerManager';
 import ErrorProcessor from './errorProcessor';
 
@@ -13,59 +14,87 @@ export default class ErrorHandler {
   private static readonly CACHE_TTL = 1000 * 60 * 20; // 20 minutes in milliseconds
 
   /**
-   * Main error handler method - use this as the primary entry point
+   * Enhanced error capture with better context handling
    */
   public static captureError(error: unknown, source: string, context?: string): void {
     try {
       // Skip error logging if this is an expected error in a negative test
       if (this.shouldSkipErrorLogging(error, context)) {
-        // Log as info instead of error for expected negative test results
-        if (axios.isAxiosError(error) && error.response?.status) {
-          logger.info(
-            `Expected error in negative test [${context}]: Status ${error.response.status}`,
-          );
-        }
-        return; // Exit early to prevent further logging
+        this.logExpectedTestError(error, context);
+        return;
       }
+
       // Generate error details
       const details = ErrorProcessor.createErrorDetails(error, source, context);
+
       // Create a cache key to avoid duplicate logging
       const cacheKey = ErrorProcessor.createCacheKey(details);
+
       // Skip if already logged recently
       if (this.isRecentlyLogged(cacheKey)) {
         return;
       }
+
       // Add to cache and maintain cache size
       this.manageCacheSize(cacheKey);
-      // Sanitize and log the structured error - ensure stack trace is removed
-      const sanitizedDetails = ErrorProcessor.sanitizeObject(
-        details as unknown as Record<string, unknown>,
-      );
-      logger.error(JSON.stringify(sanitizedDetails, null, 2));
+
+      // Log the primary error
+      this.logStructuredError(details);
+
       // Log additional details if available
-      const extraDetails = ErrorProcessor.extractExtraDetails(error);
-      if (Object.keys(extraDetails).length > 0) {
-        logger.error(
-          JSON.stringify(
-            {
-              source,
-              type: extraDetails?.statusText || 'Unknown',
-              details: extraDetails,
-            },
-            null,
-            2,
-          ),
-        );
-      }
+      this.logAdditionalDetails(error, source);
     } catch (loggingError) {
-      // Fallback for errors during error handling
-      logger.error(
+      this.handleLoggingFailure(loggingError, source);
+    }
+  }
+
+  /**
+   * Log expected test errors as info
+   */
+  private static logExpectedTestError(error: unknown, context?: string): void {
+    if (axios.isAxiosError(error) && error.response?.status) {
+      logger.info(
+        `Expected error in negative test [${context}]: Status ${error.response.status} - ${error.response.statusText || 'Unknown'}`,
+      );
+    } else {
+      logger.info(
+        `Expected error in negative test [${context}]: ${ErrorProcessor.getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Log structured error details with proper typing
+   */
+  private static logStructuredError(details: ErrorDetails): void {
+    const sanitizedDetails = ErrorProcessor.sanitizeObject(
+      details as unknown as Record<string, unknown>,
+    );
+
+    // Add severity level based on category
+    const logLevel = this.getLogLevel(details.category);
+    const logMessage = JSON.stringify(sanitizedDetails, null, 2);
+
+    if (logLevel === 'warn') {
+      logger.warn(logMessage);
+    } else {
+      logger.error(logMessage);
+    }
+  }
+
+  /**
+   * Log additional error details
+   */
+  private static logAdditionalDetails(error: unknown, source: string): void {
+    const extraDetails = ErrorProcessor.extractExtraDetails(error);
+
+    if (Object.keys(extraDetails).length > 0) {
+      logger.debug(
         JSON.stringify(
           {
             source,
-            context: 'Error Handler Failure',
-            message: ErrorProcessor.getErrorMessage(loggingError),
-            category: ErrorCategory.UNKNOWN,
+            type: 'Additional Details',
+            details: extraDetails,
           },
           null,
           2,
@@ -74,13 +103,65 @@ export default class ErrorHandler {
     }
   }
 
-public static logAndThrow(message: string): never;
-public static logAndThrow(message: string, source: string): never;
-public static logAndThrow(message: string, source: string = 'Source not specified'): never {
-  this.captureError(new Error(message), source);
-  throw new Error(message);
-}
+  /**
+   * Handle failures in the error logging process
+   */
+  private static handleLoggingFailure(loggingError: unknown, source: string): void {
+    logger.error(
+      JSON.stringify(
+        {
+          source,
+          context: 'Error Handler Failure',
+          message: ErrorProcessor.getErrorMessage(loggingError),
+          category: ErrorCategory.UNKNOWN,
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+  }
 
+  /**
+   * Determine appropriate log level based on error category
+   */
+  private static getLogLevel(category: ErrorCategory): 'error' | 'warn' {
+    const warnCategories = [
+      ErrorCategory.VALIDATION,
+      ErrorCategory.NOT_FOUND,
+      ErrorCategory.HTTP_CLIENT,
+      ErrorCategory.RATE_LIMIT,
+    ];
+
+    return warnCategories.includes(category) ? 'warn' : 'error';
+  }
+
+  /**
+   * Enhanced cache management with better performance
+   */
+  private static manageCacheSize(cacheKey: string): void {
+    const now = Date.now();
+
+    // Clean expired entries less frequently for better performance
+    if (this.loggedErrors.size % 50 === 0) {
+      this.cleanExpiredEntries(now);
+    }
+
+    // Add new entry
+    this.loggedErrors.set(cacheKey, now);
+
+    // Only remove oldest if we're significantly over the limit
+    if (this.loggedErrors.size > this.MAX_CACHE_SIZE * 1.1) {
+      this.removeOldestEntries();
+    }
+  }
+
+  public static logAndThrow(message: string): never;
+  public static logAndThrow(message: string, source: string): never;
+  public static logAndThrow(message: string, source: string = 'Source not specified'): never {
+    this.captureError(new Error(message), source);
+    throw new Error(message);
+  }
 
   /**
    * Log error but continue execution
@@ -127,24 +208,6 @@ public static logAndThrow(message: string, source: string = 'Source not specifie
     }
 
     return false;
-  }
-
-  /**
-   * Add item to cache with current timestamp and manage cache size/expiration
-   */
-  private static manageCacheSize(cacheKey: string): void {
-    const now = Date.now();
-
-    // First clean up expired entries
-    this.cleanExpiredEntries(now);
-
-    // Add new entry with current timestamp
-    this.loggedErrors.set(cacheKey, now);
-
-    // If still over size limit after cleanup, remove oldest entries
-    if (this.loggedErrors.size > this.MAX_CACHE_SIZE) {
-      this.removeOldestEntries();
-    }
   }
 
   /**
