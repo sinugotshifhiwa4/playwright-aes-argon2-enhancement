@@ -50,7 +50,7 @@ All sensitive data is encrypted using **AES-GCM** and secured with **Argon2** ha
 Run this first to create a secure encryption key:
 
 ```bash
-npx cross-env PLAYWRIGHT_GREP=@key-gen npm run test:encryption:dev
+npx cross-env PLAYWRIGHT_GREP="@generate-key" npm run test:encryption:dev
 ```
 
 #### 2. Encrypt Credentials
@@ -58,20 +58,39 @@ npx cross-env PLAYWRIGHT_GREP=@key-gen npm run test:encryption:dev
 After generating the key, encrypt your `.env` credentials:
 
 ```bash
-npx cross-env PLAYWRIGHT_GREP=@encrypt npm run test:encryption:dev
+npx cross-env PLAYWRIGHT_GREP="@encrypt-vars" npm run test:encryption:dev
 ```
 
 > 💡 Replace `dev` with your environment: `uat`, `prod`, etc. Ensure a `.env.<env>` file exists.
 
-#### 3. Decrypt Credentials
+---
 
-To access encrypted credentials during test execution:
+## Encryption Workflows
+
+All sensitive data is encrypted using **AES-GCM** and secured with **Argon2** hashing.
+
+### Encryption Commands
+
+Run encryption-related workflows using tagged tests. Use the `PLAYWRIGHT_GREP` variable to specify the operation.
 
 ```bash
-npx cross-env PLAYWRIGHT_GREP=@decrypt npm run test:encryption:dev
+npx cross-env PLAYWRIGHT_GREP="@<tag>" npm run test:encryption:<env>
 ```
 
-> 💡 Again, replace `dev` with your target environment as needed.
+> 💡 Replace `<tag>` with the desired operation (see table below), and `<env>` with your environment (`dev`, `uat`, `prod`, etc.).
+> Ensure a `.env.<env>` file exists before running the command.
+
+#### Available Tags
+
+| Tag                  | Description                                |
+| -------------------- | ------------------------------------------ |
+| `@generate-key`      | Generate a new encryption key              |
+| `@encrypt-vars`      | Encrypt environment variables              |
+| `@verify-encryption` | Verify variables are encrypted             |
+| `@rotate-key`        | Rotate secret key and re-encrypt variables |
+| `@rotation-status`   | Check key rotation status                  |
+| `@system-audit`      | Perform system audit for key health        |
+| `@key-info`          | Get key metadata and rotation status       |
 
 ---
 

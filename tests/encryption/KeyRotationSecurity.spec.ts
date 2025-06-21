@@ -3,7 +3,7 @@ import { EnvironmentSecretKeys } from '../../src/config/environment/dotenv/const
 import logger from '../../src/utils/logging/loggerManager';
 
 test.describe('Key Rotation Security Test Suite', () => {
-  test('Perform system audit @audit', async ({ cryptoOrchestrator }) => {
+  test('Perform system audit @system-audit', async ({ cryptoOrchestrator }) => {
     const response = await cryptoOrchestrator.performSystemAudit();
 
     if (response.keysNeedingRotation.length === 0) {
@@ -19,7 +19,7 @@ test.describe('Key Rotation Security Test Suite', () => {
     }
   });
 
-  test('Get Key information @info', async ({ cryptoOrchestrator }) => {
+  test('Get Key information @key-info', async ({ cryptoOrchestrator }) => {
     const response = await cryptoOrchestrator.getKeyInformation(EnvironmentSecretKeys.DEV, false);
 
     if (response.exists) {
